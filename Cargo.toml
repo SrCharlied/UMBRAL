@@ -1,0 +1,16 @@
+[package]
+name = "umbral"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "UMBRAL: Asfixia Lucida - renderizador 3D por software (base heredada de carga-modelos-24531)"
+
+[dependencies]
+minifb = "=0.28.0"
+png = "=0.18.1"
+
+[profile.dev]
+opt-level = 2
+
+[profile.release]
+lto = "thin"

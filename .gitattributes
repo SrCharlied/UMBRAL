@@ -1,0 +1,11 @@
+# Texto con LF en todas las plataformas (core.autocrlf no aplica a estos archivos).
+* text=auto eol=lf
+
+# Modelos: se versionan byte a byte; ningun cambio de fin de linea.
+*.obj -text
+*.mtl -text
+
+# Imagenes y fuentes editables binarias.
+*.png binary
+*.jpg binary
+*.blend binary

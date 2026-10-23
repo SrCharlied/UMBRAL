@@ -1,0 +1,19 @@
+# Contexto local de Veliona; no forma parte de la entrega.
+/veli/
+
+# Compilacion de Rust. Cargo.lock se conserva en Git.
+/target/
+
+# Renders temporales; no excluir evidencia final.
+/renders/smoke/
+/renders/tmp/
+
+# Archivos locales de editores y sistema.
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
