@@ -7,9 +7,10 @@ use umbral::{
     },
 };
 
-// Generado por `umbral --headless` y verificado identico a renders/nave.png de
-// carga-modelos-24531 @ 51fbaed (SHA-256 5906177...0bfa). Solo se reemplaza con
-// una decision explicita del equipo, nunca para "arreglar" esta prueba.
+// Generado por `umbral --headless` a 1280x960 (hoy: `--width 1280 --height 960`) y
+// verificado identico a renders/nave.png de carga-modelos-24531 @ 51fbaed (SHA-256
+// 5906177...0bfa). Solo se reemplaza con una decision explicita del equipo, nunca
+// para "arreglar" esta prueba.
 fn baseline_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy_ship_1280x960.png")
 }
@@ -58,7 +59,7 @@ fn el_render_legado_de_la_nave_coincide_pixel_a_pixel_con_el_baseline() {
 fn el_modo_headless_reproduce_el_png_baseline_byte_a_byte() {
     let path = std::env::temp_dir().join(format!("umbral_baseline_{}.png", std::process::id()));
     let result = Command::new(env!("CARGO_BIN_EXE_umbral"))
-        .arg("--headless")
+        .args(["--headless", "--width", "1280", "--height", "960"])
         .arg("--output")
         .arg(&path)
         .output()

@@ -26,7 +26,17 @@ cargo run --release --locked
 | `P` | Guardar el framebuffer actual en PNG |
 | `Esc` | Salir |
 
-Opciones: `--headless`, `--output archivo.png`, `--frames N` (cierra la ventana tras N frames), `--help`.
+Opciones: `--headless`, `--output archivo.png`, `--frames N` (cierra la ventana tras N frames), `--width N`, `--height N`, `--help`.
+
+### Resolución
+
+| Parámetro | Valor |
+|---|---|
+| Por defecto | **1280×720 (16:9)**, decisión aprobada; definida solo en `src/config.rs` |
+| `--width N` / `--height N` | Enteros positivos; cada uno sustituye su valor por defecto de forma independiente |
+| Límite | `width × height ≤ 16 777 216` píxeles (`MAX_PIXELS`, equivale a 4096×4096), validado por `Framebuffer::new` antes de reservar memoria, incluido el desbordamiento de la multiplicación |
+
+La ventana y el framebuffer se crean con las mismas dimensiones: no hay escalado ni cambio de tamaño de ventana. Un valor faltante, no entero, cero o demasiado grande termina con código 1 y un mensaje en `Error: ...`, sin escribir PNG ni abrir ventana. No se ha medido rendimiento a ninguna resolución: todavía no existe la escena del juego.
 
 - La rotación avanza 0.03 rad **por frame**, no por tiempo: es comportamiento heredado y se sustituye en UMB-106.
 - `P` escribe por defecto en `renders/nave.png`, ruta que `.gitignore` no excluye. Para pruebas manuales conviene `--output renders/tmp/vista.png`.
@@ -35,10 +45,18 @@ Opciones: `--headless`, `--output archivo.png`, `--frames N` (cierra la ventana 
 ### Generar imagen sin ventana
 
 ```bash
-cargo run --release --locked -- --headless --output renders/smoke/frame.png
+cargo run --release --locked -- --headless --output renders/smoke/frame_720p.png
 ```
 
-Usa el mismo renderer que la ventana, guarda el PNG (1280×960) y termina. `renders/smoke/` y `renders/tmp/` están en `.gitignore`.
+Usa el mismo renderer que la ventana, guarda el PNG a la resolución elegida (por defecto 1280×720) y termina. `renders/smoke/` y `renders/tmp/` están en `.gitignore`.
+
+Para reproducir el **baseline heredado** hay que pedir 1280×960 explícitamente:
+
+```bash
+cargo run --release --locked -- --headless --width 1280 --height 960 --output renders/smoke/legacy_960p.png
+```
+
+El PNG resultante debe ser idéntico byte a byte a `tests/fixtures/legacy_ship_1280x960.png`. El render a 720p es una imagen distinta y no reemplaza ese baseline.
 
 ## Validación local
 
@@ -46,16 +64,18 @@ Usa el mismo renderer que la ventana, guarda el PNG (1280×960) y termina. `rend
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
-cargo run --release --locked -- --headless --output renders/smoke/frame.png
+cargo run --release --locked -- --headless --output renders/smoke/frame_720p.png
+cargo run --release --locked -- --headless --width 1280 --height 960 --output renders/smoke/legacy_960p.png
 ```
 
-Con las dependencias ya descargadas puede añadirse `--offline`. Las pruebas cubren framebuffer y profundidad, rasterización en ambos órdenes de vértices, lector OBJ/MTL con la nave real, exportación PNG, la línea de comandos y una **regresión determinista de la nave**: `tests/ship_baseline.rs` compara el render píxel a píxel y el PNG headless byte a byte contra `tests/fixtures/legacy_ship_1280x960.png`. Ese fixture se generó con este repositorio y es idéntico al `renders/nave.png` del laboratorio de origen (SHA-256 `590617750436c32056a02602f94cfb9243e4398599005e94efefa99683e80bfa`).
+Con las dependencias ya descargadas puede añadirse `--offline`. Las pruebas cubren framebuffer y profundidad, rasterización en ambos órdenes de vértices, lector OBJ/MTL con la nave real, exportación PNG, la línea de comandos (resolución por defecto 1280×720 y rechazo de dimensiones inválidas) y una **regresión determinista de la nave**: `tests/ship_baseline.rs` compara el render a 1280×960 píxel a píxel y el PNG headless con `--width 1280 --height 960` byte a byte contra `tests/fixtures/legacy_ship_1280x960.png`. Ese fixture se generó con este repositorio y es idéntico al `renders/nave.png` del laboratorio de origen (SHA-256 `590617750436c32056a02602f94cfb9243e4398599005e94efefa99683e80bfa`).
 
 ## Estructura
 
 ```text
 src/main.rs                 Línea de comandos, ventana minifb y modo headless
 src/lib.rs                  Raíz de la biblioteca
+src/config.rs               Parámetros centralizados (resolución por defecto)
 src/assets/obj.rs           Lector propio OBJ/MTL (posiciones, caras trianguladas, Kd)
 src/assets/mod.rs           Ruta de la nave
 src/renderer/framebuffer.rs Color y z-buffer

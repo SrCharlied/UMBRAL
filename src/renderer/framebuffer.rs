@@ -1,3 +1,6 @@
+/// Maximo de pixeles aceptado por `Framebuffer::new` (equivale a 4096x4096).
+pub const MAX_PIXELS: usize = 16_777_216;
+
 pub struct Framebuffer {
     pub width: usize,
     pub height: usize,
@@ -11,7 +14,7 @@ impl Framebuffer {
     pub fn new(width: usize, height: usize, background: u32) -> Result<Self, String> {
         let count = width
             .checked_mul(height)
-            .filter(|&n| n > 0 && n <= 16_777_216)
+            .filter(|&n| n > 0 && n <= MAX_PIXELS)
             .ok_or("Dimensiones de framebuffer invalidas o demasiado grandes")?;
         Ok(Self {
             width,

@@ -2,16 +2,30 @@ use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use std::path::PathBuf;
 use umbral::{
     assets::{obj::load_model, ship_model_path},
+    config::{DEFAULT_HEIGHT, DEFAULT_WIDTH},
     renderer::{
-        framebuffer::Framebuffer,
+        framebuffer::{Framebuffer, MAX_PIXELS},
         image::save_png,
         legacy::{BACKGROUND, render_model},
     },
 };
 
+fn positive_argument(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<usize, String> {
+    let value = args
+        .next()
+        .ok_or_else(|| format!("Falta la cantidad despues de {flag}"))?
+        .parse::<usize>()
+        .map_err(|_| format!("{flag} necesita un entero positivo"))?;
+    if value == 0 {
+        return Err(format!("{flag} debe ser mayor que cero"));
+    }
+    Ok(value)
+}
+
 fn run() -> Result<(), String> {
     let mut headless = false;
     let mut frame_limit = None;
+    let (mut width, mut height) = (DEFAULT_WIDTH, DEFAULT_HEIGHT);
     let mut output = PathBuf::from("renders/nave.png");
     let mut args = std::env::args().skip(1);
     while let Some(argument) = args.next() {
@@ -20,20 +34,12 @@ fn run() -> Result<(), String> {
             "--output" => {
                 output = PathBuf::from(args.next().ok_or("Falta la ruta despues de --output")?)
             }
-            "--frames" => {
-                let frames = args
-                    .next()
-                    .ok_or("Falta la cantidad despues de --frames")?
-                    .parse::<usize>()
-                    .map_err(|_| "--frames necesita un entero positivo")?;
-                if frames == 0 {
-                    return Err("--frames debe ser mayor que cero".into());
-                }
-                frame_limit = Some(frames);
-            }
+            "--frames" => frame_limit = Some(positive_argument(&mut args, "--frames")?),
+            "--width" => width = positive_argument(&mut args, "--width")?,
+            "--height" => height = positive_argument(&mut args, "--height")?,
             "--help" | "-h" => {
                 println!(
-                    "cargo run --release -- [--headless] [--output archivo.png] [--frames N]\nA/D o flechas: rotar | R: restablecer | P: guardar PNG | Esc: salir"
+                    "cargo run --release -- [--headless] [--output archivo.png] [--frames N] [--width N] [--height N]\nResolucion por defecto: {DEFAULT_WIDTH}x{DEFAULT_HEIGHT} (maximo {MAX_PIXELS} pixeles)\nA/D o flechas: rotar | R: restablecer | P: guardar PNG | Esc: salir"
                 );
                 return Ok(());
             }
@@ -41,8 +47,8 @@ fn run() -> Result<(), String> {
         }
     }
     let model = load_model(&ship_model_path())?;
-    let (width, height) = (1280, 960);
-    let mut framebuffer = Framebuffer::new(width, height, BACKGROUND)?;
+    let mut framebuffer = Framebuffer::new(width, height, BACKGROUND)
+        .map_err(|e| format!("{e}: {width}x{height} (maximo {MAX_PIXELS} pixeles)"))?;
     let mut angle = 0.0;
     let stats = render_model(&mut framebuffer, &model, angle)?;
     println!(
