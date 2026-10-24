@@ -1,6 +1,24 @@
 # Arquitectura de UMBRAL
 
-Estado: **Hito 0**. Este documento separa lo que existe en el código de lo que solo está propuesto. Nada de la sección «Contratos propuestos» está acordado ni implementado: UMB-003 y UMB-004 siguen abiertas.
+Estado: **Hito 1 (Persona 1)** implementado en código; los contratos de la sección 5 existen tal como se describen abajo, pero **siguen sin aceptarse formalmente** (UMB-003) y UMB-004 (bibliotecas) sigue abierta. Persona 2 y Persona 3 deben revisarlos antes de construir encima.
+
+## 0. Lo implementado en el Hito 1
+
+| Tarea | Dónde | Notas |
+|---|---|---|
+| UMB-101 | `renderer/pipeline.rs`, `scene/` | `draw_model` no limpia ni autoencuadra; dos instancias con `Transform` propio |
+| UMB-102 | `math/`, `scene/camera.rs` | MVP, perspectiva con NDC `[-1,1]`, división por `w`, viewport con Y invertida |
+| UMB-103 | `assets/obj.rs` | `vt`, `vn`, `v/vt/vn`, validación de rangos, esquinas mixtas rechazadas |
+| UMB-104 | `renderer/rasterizer.rs::triangle_shaded` | Posición, normal y UV con corrección de perspectiva (`1/w`) |
+| UMB-105 | `renderer/shader.rs` | Despacho por `ShaderKind`, solo para fragmentos que pasan el z-test |
+| UMB-106 | `scene/ship.rs`, `scene/world.rs` | Empuje y giros suavizados con `dt`; cámara de seguimiento |
+| UMB-107 | `scene/solar_system.rs` | Sol + 3 planetas; órbita y rotación son función pura del tiempo |
+| UMB-402 (parte de Persona 1) | `scene/world.rs` | Tres esferas (32x64, 16x32, 8x16) elegidas por radio/distancia; `F4` y `--no-lod` para comparar |
+| UMB-403 (base) | `debug/overlay.rs` | Fuente 5x7 propia y contadores; Persona 3 puede ampliarlo (shader activo, semilla) |
+| Extra | `renderer/pipeline.rs` | Descarte de caras traseras por material (`cull_backfaces`), contador `triangles_backface` |
+| UMB-401 (parcial) | `scene/world.rs`, `renderer/clipping.rs` | Descarte de objetos por esfera/frustum con interruptor `F3` y contadores |
+
+Recorte: solo contra el plano cercano (es el que puede producir `w <= 0`). Los demás planos se resuelven con la caja de pantalla del rasterizador y el descarte trivial por códigos de salida.
 
 ## 1. Módulos existentes
 
@@ -93,15 +111,16 @@ Tomados de `UMBRAL_PLAN_TECNICO.md` §5. El plan escribe `f32`; el código usa `
 
 | ID | Decisión | Quién decide | Notas |
 |---|---|---|---|
-| D1 | `f32` o `f64` para el pipeline nuevo | Persona 1 + equipo | La importación conservó `f64` para no alterar el baseline. No mezclar el cambio con otra tarea |
+| D1 | `f32` o `f64` para el pipeline nuevo | Persona 1 + equipo | **Resuelta provisionalmente: `f64`** en todo el código nuevo (el plan escribe `f32`). Cambiarlo es mecánico pero toca todos los módulos |
 | D2 | ¿Se permite una biblioteca matemática? ¿Se conserva `minifb` o se espera Raylib? | Equipo con el profesor (UMB-004) | Sin confirmar. No se agregó ninguna dependencia |
-| D3 | Convenciones de la sección 4 (mano, eje frontal, NDC, orden de Euler) | Persona 1 (UMB-003) | Necesario antes de UMB-102 |
+| D3 | Convenciones de la sección 4 (mano, eje frontal, NDC, orden de Euler) | Persona 1 (UMB-003) | **Implementada:** mano derecha, Y arriba, la cámara mira a −Z, NDC `[-1,1]`, `R = Ry·Rx·Rz`, `M = T·R·S`. Falta que el equipo la acepte |
 | D4 | Estructura de `Material` y si los shaders leen `Kd` | Persona 1 + Persona 3 | — |
 | D5 | Resolución de assets: `CARGO_MANIFEST_DIR` o relativa al ejecutable | Persona 1 | Hoy el binario no es reubicable |
 | D6 | Baseline exacto en otras plataformas | Equipo | Solo verificado en Windows x86_64 con Rust 1.97.0. Si falla en otro sistema, investigar el redondeo antes de regenerar el fixture o introducir tolerancia |
 | D7 | Ruta por defecto de `P` (`renders/nave.png`, no ignorada) | Persona 3 | Comportamiento heredado sin cambios |
 | D8 | Modelo de prueba con UV para UMB-103/104 | Persona 1 + Persona 3 | La nave no tiene `vt` |
 | D9 | Asignación de Persona 1, 2 y 3 | Equipo | — |
+| D11 | Hacia dónde apunta el OBJ de la nave | Persona 3 | `SHIP_MODEL_YAW = π` en `scene/world.rs` alinea el modelo con −Z; se verificó solo visualmente |
 | D10 | Escalado render → presentación y ventana redimensionable | Persona 1 + Persona 3 | Hoy no existe; decidir si la resolución de render puede ser menor que la ventana (plan §14) |
 
 ## 7. Validación
