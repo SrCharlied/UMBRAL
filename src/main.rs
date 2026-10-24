@@ -1,6 +1,7 @@
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use std::path::PathBuf;
 use umbral::{
+    app::{GameOptions, run_game},
     assets::{obj::load_model, ship_model_path},
     config::{DEFAULT_HEIGHT, DEFAULT_WIDTH},
     renderer::{
@@ -27,12 +28,32 @@ fn run() -> Result<(), String> {
     let mut frame_limit = None;
     let (mut width, mut height) = (DEFAULT_WIDTH, DEFAULT_HEIGHT);
     let mut output = PathBuf::from("renders/nave.png");
+    let (mut legacy, mut time, mut near, mut culling) = (false, 0.0, None, true);
+    let (mut lod, mut overlay) = (true, false);
     let mut args = std::env::args().skip(1);
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--headless" => headless = true,
             "--output" => {
                 output = PathBuf::from(args.next().ok_or("Falta la ruta despues de --output")?)
+            }
+            "--legacy" => legacy = true,
+            "--no-culling" => culling = false,
+            "--no-lod" => lod = false,
+            "--overlay" => overlay = true,
+            "--time" => {
+                time = args
+                    .next()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .filter(|t| t.is_finite() && *t >= 0.0)
+                    .ok_or("--time necesita segundos >= 0")?
+            }
+            "--near" => {
+                near = Some(
+                    args.next()
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .ok_or("--near necesita el indice de un cuerpo (0 = Sol)")?,
+                )
             }
             "--frames" => frame_limit = Some(positive_argument(&mut args, "--frames")?),
             "--width" => width = positive_argument(&mut args, "--width")?,
@@ -45,6 +66,20 @@ fn run() -> Result<(), String> {
             }
             _ => return Err(format!("Argumento desconocido: {argument}. Usa --help.")),
         }
+    }
+    if !legacy {
+        return run_game(GameOptions {
+            width,
+            height,
+            headless,
+            frame_limit,
+            output,
+            time,
+            near,
+            culling,
+            lod,
+            overlay,
+        });
     }
     let model = load_model(&ship_model_path())?;
     let mut framebuffer = Framebuffer::new(width, height, BACKGROUND)

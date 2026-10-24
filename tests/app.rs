@@ -26,7 +26,7 @@ fn el_programa_headless_carga_el_obj_y_exporta_un_png_real() {
     assert!(
         bytes[..info.buffer_size()]
             .chunks_exact(3)
-            .any(|rgb| rgb != [16, 25, 31])
+            .any(|rgb| rgb != [3, 4, 10])
     );
     std::fs::remove_file(path).unwrap();
 }

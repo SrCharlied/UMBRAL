@@ -4,23 +4,65 @@ use std::path::Path;
 #[derive(Debug)]
 pub struct Face {
     pub vertex_indices: [usize; 3],
+    /// Indices `vt` por esquina, si la cara los declara.
+    pub uv_indices: Option<[usize; 3]>,
+    /// Indices `vn` por esquina, si la cara los declara.
+    pub normal_indices: Option<[usize; 3]>,
     pub material: Option<String>,
 }
 
 #[derive(Debug)]
 pub struct Model {
     pub vertices: Vec<[f64; 3]>,
+    pub uvs: Vec<[f64; 2]>,
+    pub normals: Vec<[f64; 3]>,
     pub faces: Vec<Face>,
     pub material_libraries: Vec<String>,
     pub materials: BTreeMap<String, [f64; 3]>,
+    /// Esfera envolvente en espacio de objeto (centro de la caja y radio maximo).
+    pub bounds_center: [f64; 3],
+    pub bounds_radius: f64,
+}
+
+impl Model {
+    /// Calcula `bounds_center` y `bounds_radius` a partir de los vertices.
+    pub fn update_bounds(&mut self) {
+        let mut min = [f64::INFINITY; 3];
+        let mut max = [f64::NEG_INFINITY; 3];
+        for v in &self.vertices {
+            for axis in 0..3 {
+                min[axis] = min[axis].min(v[axis]);
+                max[axis] = max[axis].max(v[axis]);
+            }
+        }
+        if self.vertices.is_empty() {
+            return;
+        }
+        let center = [0, 1, 2].map(|a| (min[a] + max[a]) / 2.0);
+        self.bounds_center = center;
+        self.bounds_radius = self
+            .vertices
+            .iter()
+            .map(|v| {
+                (0..3)
+                    .map(|a| (v[a] - center[a]).powi(2))
+                    .sum::<f64>()
+                    .sqrt()
+            })
+            .fold(0.0, f64::max);
+    }
 }
 
 pub fn parse_obj(source: &str) -> Result<Model, String> {
     let mut model = Model {
         vertices: Vec::new(),
+        uvs: Vec::new(),
+        normals: Vec::new(),
         faces: Vec::new(),
         material_libraries: Vec::new(),
         materials: BTreeMap::new(),
+        bounds_center: [0.0; 3],
+        bounds_radius: 0.0,
     };
     let mut current_material = None;
     for (line_index, line) in source.lines().enumerate() {
@@ -47,22 +89,75 @@ pub fn parse_obj(source: &str) -> Result<Model, String> {
                 }
                 model.vertices.push(vertex);
             }
+            Some("vt") => {
+                if fields.len() < 3 || fields.len() > 4 {
+                    return Err(error("se esperaba vt u v"));
+                }
+                let mut uv = [0.0; 2];
+                for axis in 0..2 {
+                    uv[axis] = fields[axis + 1]
+                        .parse::<f64>()
+                        .map_err(|_| error("coordenada UV invalida"))?;
+                    if !uv[axis].is_finite() {
+                        return Err(error("la coordenada UV debe ser finita"));
+                    }
+                }
+                model.uvs.push(uv);
+            }
+            Some("vn") => {
+                if fields.len() != 4 {
+                    return Err(error("se esperaba vn x y z"));
+                }
+                let mut normal = [0.0; 3];
+                for axis in 0..3 {
+                    normal[axis] = fields[axis + 1]
+                        .parse::<f64>()
+                        .map_err(|_| error("normal invalida"))?;
+                    if !normal[axis].is_finite() {
+                        return Err(error("la normal debe ser finita"));
+                    }
+                }
+                model.normals.push(normal);
+            }
             Some("f") => {
                 if fields.len() != 4 {
                     return Err(error("el modelo debe estar triangulado"));
                 }
                 let mut vertex_indices = [0; 3];
+                let mut uv_indices = [0; 3];
+                let mut normal_indices = [0; 3];
+                let (mut has_uv, mut has_normal) = (0, 0);
                 for (corner, token) in fields[1..].iter().enumerate() {
-                    let obj_index = token
-                        .split('/')
-                        .next()
-                        .unwrap_or("")
-                        .parse::<usize>()
-                        .map_err(|_| error("indice invalido"))?;
-                    vertex_indices[corner] = obj_index
-                        .checked_sub(1)
-                        .filter(|&i| i < model.vertices.len())
-                        .ok_or_else(|| error("indice fuera de rango"))?;
+                    let mut parts = token.split('/');
+                    let index =
+                        |part: Option<&str>, count: usize| -> Result<Option<usize>, String> {
+                            match part {
+                                None | Some("") => Ok(None),
+                                Some(text) => text
+                                    .parse::<usize>()
+                                    .ok()
+                                    .and_then(|i| i.checked_sub(1))
+                                    .filter(|&i| i < count)
+                                    .map(Some)
+                                    .ok_or_else(|| error("indice invalido o fuera de rango")),
+                            }
+                        };
+                    vertex_indices[corner] = index(parts.next(), model.vertices.len())?
+                        .ok_or_else(|| error("indice invalido o fuera de rango"))?;
+                    if let Some(i) = index(parts.next(), model.uvs.len())? {
+                        uv_indices[corner] = i;
+                        has_uv += 1;
+                    }
+                    if let Some(i) = index(parts.next(), model.normals.len())? {
+                        normal_indices[corner] = i;
+                        has_normal += 1;
+                    }
+                    if parts.next().is_some() {
+                        return Err(error("demasiados campos en el indice de la cara"));
+                    }
+                }
+                if !matches!(has_uv, 0 | 3) || !matches!(has_normal, 0 | 3) {
+                    return Err(error("la cara mezcla esquinas con y sin vt/vn"));
                 }
                 if vertex_indices[0] == vertex_indices[1]
                     || vertex_indices[1] == vertex_indices[2]
@@ -72,6 +167,8 @@ pub fn parse_obj(source: &str) -> Result<Model, String> {
                 }
                 model.faces.push(Face {
                     vertex_indices,
+                    uv_indices: (has_uv == 3).then_some(uv_indices),
+                    normal_indices: (has_normal == 3).then_some(normal_indices),
                     material: current_material.clone(),
                 });
             }
@@ -93,6 +190,7 @@ pub fn parse_obj(source: &str) -> Result<Model, String> {
     if model.vertices.is_empty() || model.faces.is_empty() {
         return Err("OBJ sin vertices o caras".into());
     }
+    model.update_bounds();
     Ok(model)
 }
 

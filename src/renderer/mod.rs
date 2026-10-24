@@ -3,7 +3,11 @@
 //! `framebuffer`, `rasterizer` e `image` son la base reutilizable; `legacy` es el
 //! visor heredado y se reemplazara en UMB-101/UMB-102.
 
+pub mod clipping;
 pub mod framebuffer;
 pub mod image;
 pub mod legacy;
+pub mod pipeline;
 pub mod rasterizer;
+pub mod shader;
+pub mod stats;

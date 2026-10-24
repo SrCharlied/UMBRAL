@@ -59,7 +59,14 @@ fn el_render_legado_de_la_nave_coincide_pixel_a_pixel_con_el_baseline() {
 fn el_modo_headless_reproduce_el_png_baseline_byte_a_byte() {
     let path = std::env::temp_dir().join(format!("umbral_baseline_{}.png", std::process::id()));
     let result = Command::new(env!("CARGO_BIN_EXE_umbral"))
-        .args(["--headless", "--width", "1280", "--height", "960"])
+        .args([
+            "--legacy",
+            "--headless",
+            "--width",
+            "1280",
+            "--height",
+            "960",
+        ])
         .arg("--output")
         .arg(&path)
         .output()

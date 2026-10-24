@@ -50,4 +50,40 @@ impl Framebuffer {
             false
         }
     }
+    /// Verdadero si un fragmento a esta profundidad ganaria el z-test (sin escribir).
+    pub fn depth_passes(&self, x: isize, y: isize, depth: f64) -> bool {
+        x >= 0
+            && y >= 0
+            && (x as usize) < self.width
+            && (y as usize) < self.height
+            && depth.is_finite()
+            && depth < self.depth[y as usize * self.width + x as usize]
+    }
+    /// Escribe `color` si el z-test pasa; no usa `set_color`.
+    pub fn write(&mut self, x: isize, y: isize, depth: f64, color: u32) -> bool {
+        if !self.depth_passes(x, y, depth) {
+            return false;
+        }
+        let index = y as usize * self.width + x as usize;
+        self.depth[index] = depth;
+        self.pixels[index] = color & 0xffffff;
+        true
+    }
+    /// Escribe un pixel sin z-test (superposiciones 2D como el overlay).
+    pub fn put_pixel(&mut self, x: usize, y: usize, color: u32) {
+        if x < self.width && y < self.height {
+            self.pixels[y * self.width + x] = color & 0xffffff;
+        }
+    }
+    /// Oscurece un rectangulo multiplicando cada canal por `1 - amount`.
+    pub fn darken_rect(&mut self, x: usize, y: usize, w: usize, h: usize, amount: f64) {
+        let keep = ((1.0 - amount.clamp(0.0, 1.0)) * 256.0) as u32;
+        for py in y..(y + h).min(self.height) {
+            for px in x..(x + w).min(self.width) {
+                let p = &mut self.pixels[py * self.width + px];
+                let ch = |shift: u32| ((((*p >> shift) & 0xff) * keep) >> 8) << shift;
+                *p = ch(16) | ch(8) | ch(0);
+            }
+        }
+    }
 }

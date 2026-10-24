@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 pub mod obj;
+pub mod primitives;
 
 /// OBJ de la nave dentro del checkout donde se compilo el crate.
 ///
