@@ -198,3 +198,28 @@ fn la_esfera_generada_apunta_hacia_afuera_y_tiene_normales_unitarias() {
             .all(|n| (Vec3::from_array(*n).length() - 1.0).abs() < 1e-12)
     );
 }
+
+#[test]
+fn un_suelo_enorme_que_cruza_el_plano_cercano_se_rellena_sin_huecos() {
+    // Triangulo de 2000 unidades bajo la camara: sin recorte bien hecho dejaria huecos
+    // o coordenadas de pantalla absurdas; debe cubrir toda la mitad inferior de la vista.
+    let floor = parse_obj("v -1000 0 -1000\nv 1000 0 -1000\nv 0 0 1000\nf 1 3 2\n").unwrap();
+    let mut cam = Camera::new(60f64.to_radians(), 1.0, 0.3, 6000.0).unwrap();
+    cam.position = Vec3::new(0.0, 2.0, 0.0);
+    cam.target = Vec3::new(0.0, 0.0, -10.0);
+    let mut fb = Framebuffer::new(200, 200, BG).unwrap();
+    let stats = draw_model(
+        &mut fb,
+        &floor,
+        &Transform::IDENTITY,
+        &Material::solid(1.0, 1.0, 1.0),
+        ShaderKind::Flat,
+        &context(),
+        &cam,
+    );
+    assert_eq!(stats.triangles_clipped, 1);
+    let lower = fb.pixels[100 * 200..].iter().filter(|&&p| p != BG).count();
+    assert_eq!(lower, 100 * 200);
+    // El horizonte queda por encima del centro porque la camara mira hacia abajo.
+    assert!(fb.pixels[..100 * 200].iter().any(|&p| p != BG));
+}

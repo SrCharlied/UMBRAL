@@ -168,3 +168,89 @@ fn descartar_caras_traseras_reduce_triangulos_sin_cambiar_la_imagen() {
     assert!(with.triangles_rasterized < without.triangles_rasterized);
     assert_eq!(image_with, fb.pixels);
 }
+
+#[test]
+fn la_camara_conserva_su_distancia_a_la_nave_a_cualquier_velocidad_y_giro() {
+    let expected = (22.0f64.powi(2) + 6.0f64.powi(2)).sqrt();
+    let mut world = new_world();
+    for boost in [false, true] {
+        let input = ShipInput {
+            thrust: 1.0,
+            yaw: 0.6,
+            pitch: 0.3,
+            boost,
+            ..ShipInput::default()
+        };
+        for _ in 0..300 {
+            world.update(&input, 1.0 / 60.0);
+            let d = (world.camera.position - world.ship.position).length();
+            assert!((d - expected).abs() < 1e-9, "boost={boost}: {d}");
+        }
+    }
+}
+
+#[test]
+fn la_camara_se_arrastra_al_girar_y_converge_al_dejar_de_girar() {
+    let mut world = new_world();
+    let turn = ShipInput {
+        yaw: 1.0,
+        ..ShipInput::default()
+    };
+    let angle = |w: &World| w.camera.forward().dot(w.ship.forward()).acos().to_degrees();
+    // En reposo la camara mira un poco hacia abajo (altura / distancia).
+    let rest = angle(&world);
+    for _ in 0..30 {
+        world.update(&turn, 1.0 / 60.0);
+    }
+    let lag = angle(&world) - rest;
+    assert!(lag > 3.0 && lag < 30.0, "retraso {lag}");
+    for _ in 0..300 {
+        world.update(&ShipInput::default(), 1.0 / 60.0);
+    }
+    assert!((angle(&world) - rest).abs() < 0.5);
+    // La camara nunca queda con el "arriba" degenerado.
+    assert!((world.camera.up.length() - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn el_campo_de_vision_se_abre_con_la_velocidad_y_vuelve_al_frenar() {
+    let mut world = new_world();
+    let base = world.camera.fov_y;
+    let go = ShipInput {
+        thrust: 1.0,
+        boost: true,
+        ..ShipInput::default()
+    };
+    for _ in 0..600 {
+        world.update(&go, 1.0 / 60.0);
+    }
+    assert!(world.camera.fov_y > base + 0.1);
+    for _ in 0..1200 {
+        world.update(&ShipInput::default(), 1.0 / 60.0);
+    }
+    assert!((world.camera.fov_y - base).abs() < 0.01);
+}
+
+#[test]
+fn descartar_caras_traseras_de_la_nave_no_cambia_la_imagen_desde_ningun_lado() {
+    let mut world = new_world();
+    let mut fb = Framebuffer::new(320, 180, SPACE_COLOR).unwrap();
+    // Dar la vuelta a la nave para verla de frente, de lado y desde arriba.
+    for (yaw, pitch) in [(0.0, 0.0), (2.0, 0.0), (1.2, 0.0), (0.5, 1.2), (3.0, -1.0)] {
+        let input = ShipInput {
+            yaw,
+            pitch,
+            ..ShipInput::default()
+        };
+        for _ in 0..60 {
+            world.update(&input, 1.0 / 60.0);
+        }
+        world.toggles.backface_culling = true;
+        let with = world.render(&mut fb);
+        let image = fb.pixels.clone();
+        world.toggles.backface_culling = false;
+        let without = world.render(&mut fb);
+        assert!(with.triangles_backface > 0 && without.triangles_backface == 0);
+        assert_eq!(image, fb.pixels, "yaw {yaw} pitch {pitch}");
+    }
+}

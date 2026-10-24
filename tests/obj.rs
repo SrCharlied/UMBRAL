@@ -65,3 +65,37 @@ fn valida_rangos_de_uv_y_normales_y_esquinas_mixtas() {
         assert!(parse_obj(&format!("{v}{face}\n")).is_err(), "{face}");
     }
 }
+
+#[test]
+fn la_nave_es_cerrada_y_sus_caras_son_antihorarias_hacia_afuera() {
+    use std::collections::HashMap;
+    let model = umbral::assets::obj::load_model(&umbral::assets::ship_model_path()).unwrap();
+    let pos = |i: usize| model.vertices[i].map(|v| (v * 1e5).round() as i64);
+    let (mut edges, mut disagree) = (HashMap::new(), 0);
+    for face in &model.faces {
+        let [a, b, c] = face.vertex_indices;
+        for (p, q) in [(a, b), (b, c), (c, a)] {
+            *edges.entry((pos(p), pos(q))).or_insert(0) += 1;
+        }
+        let v = |i: usize| model.vertices[i];
+        let (e1, e2) = (
+            [0, 1, 2].map(|k| v(b)[k] - v(a)[k]),
+            [0, 1, 2].map(|k| v(c)[k] - v(a)[k]),
+        );
+        let n = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
+        let vn = model.normals[face.normal_indices.unwrap()[0]];
+        if n[0] * vn[0] + n[1] * vn[1] + n[2] * vn[2] <= 0.0 {
+            disagree += 1;
+        }
+    }
+    // Cada arista dirigida tiene su opuesta: malla cerrada y con orientacion consistente.
+    let open = edges
+        .iter()
+        .filter(|((p, q), n)| edges.get(&(*q, *p)) != Some(*n))
+        .count();
+    assert_eq!((open, disagree), (0, 0));
+}

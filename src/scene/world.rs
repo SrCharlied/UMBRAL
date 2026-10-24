@@ -25,6 +25,11 @@ pub const LOD_MIN_RATIO: [f64; 2] = [0.04, 0.01];
 /// Margen relativo alrededor de cada umbral para evitar parpadeo.
 pub const LOD_HYSTERESIS: f64 = 0.15;
 
+/// Respuesta (1/s) con la que la orientacion de la camara alcanza la de la nave.
+pub const CAMERA_TURN_RESPONSE: f64 = 6.0;
+pub const BASE_FOV: f64 = 60.0 * std::f64::consts::PI / 180.0;
+pub const BOOST_FOV: f64 = 75.0 * std::f64::consts::PI / 180.0;
+
 pub const SPACE_COLOR: u32 = 0x03040a;
 /// El OBJ de la nave apunta a +Z o -Z segun Blender; este giro lo alinea con -Z (D11).
 pub const SHIP_MODEL_YAW: f64 = std::f64::consts::PI;
@@ -64,6 +69,8 @@ pub struct World {
     /// Oxigeno de depuracion hasta que Persona 2 entregue `GameplayState`.
     /// TODO(UMB-205): sustituir por el valor de `GameplayState`.
     pub debug_oxygen01: f64,
+    /// Orientacion suavizada con la que la camara sigue a la nave.
+    camera_basis: Mat4,
     pub chase_distance: f64,
     pub chase_height: f64,
 }
@@ -75,7 +82,7 @@ impl World {
         let mut world = Self {
             system: SolarSystem::demo(),
             ship,
-            camera: Camera::new(60f64.to_radians(), aspect, 0.3, 6000.0)?,
+            camera: Camera::new(BASE_FOV, aspect, 0.3, 6000.0)?,
             ship_model,
             body_lod,
             sphere_lods: LOD_RESOLUTIONS
@@ -85,6 +92,7 @@ impl World {
             time: 0.0,
             toggles: DebugToggles::default(),
             debug_oxygen01: 1.0,
+            camera_basis: Mat4::IDENTITY,
             chase_distance: 22.0,
             chase_height: 6.0,
         };
@@ -141,17 +149,23 @@ impl World {
         Ok(())
     }
 
+    /// Posicion y objetivo de la camara: pegada a la nave (sin retraso de posicion) pero
+    /// orientada con `camera_basis`, que sigue a la nave con suavizado. Asi la distancia
+    /// camara-nave es constante a cualquier velocidad y solo la orientacion "se arrastra".
     fn desired_camera(&self) -> (Vec3, Vec3) {
-        let s = &self.ship;
-        let position = s.position - s.forward() * self.chase_distance + s.up() * self.chase_height;
-        (position, s.position + s.forward() * 30.0)
+        let basis = &self.camera_basis;
+        let back = basis.transform_dir(Vec3::Z);
+        let up = basis.transform_dir(Vec3::Y);
+        let position = self.ship.position + back * self.chase_distance + up * self.chase_height;
+        (position, self.ship.position - back * 30.0)
     }
 
     fn snap_camera(&mut self) {
+        self.camera_basis = self.ship.orientation;
         let (position, target) = self.desired_camera();
         self.camera.position = position;
         self.camera.target = target;
-        self.camera.up = self.ship.up();
+        self.camera.up = self.camera_basis.transform_dir(Vec3::Y);
     }
 
     pub fn update(&mut self, input: &ShipInput, dt: f64) {
@@ -162,12 +176,29 @@ impl World {
             self.time += dt;
         }
         self.ship.update(input, dt);
-        // Camara de seguimiento con suavizado independiente de los FPS.
+        // La base de la camara persigue la orientacion de la nave con suavizado
+        // independiente de los FPS; mezclar y reortonormalizar es estable para pasos chicos.
+        let k = smoothing(CAMERA_TURN_RESPONSE, dt);
+        let mut blended = self.camera_basis;
+        for (row, target_row) in blended.m.iter_mut().zip(self.ship.orientation.m) {
+            for (value, target) in row.iter_mut().zip(target_row) {
+                *value += (target - *value) * k;
+            }
+        }
+        self.camera_basis = blended.orthonormalized();
         let (position, target) = self.desired_camera();
-        let k = smoothing(10.0, dt);
-        self.camera.position = self.camera.position.lerp(position, k);
-        self.camera.target = self.camera.target.lerp(target, k);
-        self.camera.up = self.camera.up.lerp(self.ship.up(), k).normalized();
+        self.camera.position = position;
+        self.camera.target = target;
+        self.camera.up = self.camera_basis.transform_dir(Vec3::Y);
+        // Apertura mayor con la velocidad para dar sensacion de impulso.
+        let fraction = (self.ship.speed
+            / (self.ship.settings.max_speed * self.ship.settings.boost_multiplier))
+            .clamp(0.0, 1.0);
+        let fov = BASE_FOV + (BOOST_FOV - BASE_FOV) * fraction;
+        let fov = self.camera.fov_y + (fov - self.camera.fov_y) * smoothing(4.0, dt);
+        let c = self.camera;
+        // Los valores del lente ya son validos; si algun dia no lo fueran se conserva el anterior.
+        let _ = self.camera.set_lens(fov, c.aspect, c.near, c.far);
     }
 
     fn context(&self) -> ShaderContext {
@@ -226,7 +257,10 @@ impl World {
                 fb,
                 &self.ship_model,
                 &ship_transform,
-                &Material::from_model(),
+                &Material {
+                    cull_backfaces: self.toggles.backface_culling,
+                    ..Material::from_model()
+                },
                 ShaderKind::LitPlanet,
                 &context,
                 &self.camera,
