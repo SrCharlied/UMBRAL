@@ -110,12 +110,13 @@ docs/architecture.md        Propietarios, contratos y decisiones
 
 - Los tres planetas comparten esfera y el shader iluminado; solo cambian tamaño, color y órbita. La identidad propia (UMB-302), props, procedural y shaders de Asfixia Lúcida son de Persona 3.
 - Los shaders `LucidSurface` y `VoidEye` son marcadores que reutilizan `LitPlanet`; `AnimatedSun` es una primera versión (UMB-307).
-- No hay colisión, gravedad ni asistencia orbital (Persona 2). La cámara es de seguimiento fija detrás de la nave.
+- No hay colisión, gravedad ni asistencia orbital (Persona 2). La cámara sigue a la nave a distancia fija, con la orientación suavizada y el campo de visión más abierto con la velocidad; no evita atravesar planetas.
 - El LOD solo cubre las esferas de los cuerpos (tres niveles por tamaño aparente, con histéresis del 15 %); los props de Persona 3 aún no lo usan.
-- Sin recorte contra los otros cinco planos: los triángulos se limitan por la caja de la pantalla, no se recortan. El descarte de caras traseras solo se aplica a los planetas (la nave no lo usa porque su orientación de caras no se ha verificado).
+- El recorte se hace solo contra el plano cercano; los demás lados los resuelve la caja de pantalla del rasterizador (verificado con un triángulo de 2000 unidades que cruza la cámara).
 - El descarte de objetos reduce vértices procesados, pero a 720p el tiempo lo domina el relleno de fragmentos; el efecto en milisegundos es pequeño.
 - La ruta de los assets se fija con `CARGO_MANIFEST_DIR` al compilar: el binario no es reubicable.
 - El baseline de la nave solo se ha verificado en Windows x86_64.
+- El descarte de caras traseras se aplica a planetas y nave (la malla de la nave está cerrada y orientada hacia afuera, comprobado por prueba).
 - El orden y sentido de la nave (`SHIP_MODEL_YAW`) se ajustó mirando un render; no hay prueba automática.
 
 ## Origen y atribución
