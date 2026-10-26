@@ -106,7 +106,7 @@ tests/                      Pruebas heredadas, transformaciones, pipeline y mund
 docs/architecture.md        Propietarios, contratos y decisiones
 ```
 
-Distribución procedural reproducible sobre esfera (UMB-304, primera versión y vista técnica, aún sin integrar en la escena): [`docs/procedural.md`](docs/procedural.md).
+Distribución procedural reproducible y anclaje orientado de props sobre esfera (UMB-304 y UMB-305, API y vistas técnicas, aún sin integrar en la escena): [`docs/procedural.md`](docs/procedural.md).
 
 ## Limitaciones conocidas
 
