@@ -110,6 +110,8 @@ Distribución procedural reproducible y anclaje orientado de props sobre esfera 
 
 Preview técnico de un OBJ con textura PNG en CPU (vista separada del juego, sin integrar): [`docs/textured-preview.md`](docs/textured-preview.md).
 
+Visor interactivo de la criatura con cámara orbital (ventana técnica aislada, sin integrar): [`docs/creature-viewer.md`](docs/creature-viewer.md).
+
 ## Limitaciones conocidas
 
 - Los tres planetas comparten esfera y el shader iluminado; solo cambian tamaño, color y órbita. La identidad propia (UMB-302), props, procedural y shaders de Asfixia Lúcida son de Persona 3.
