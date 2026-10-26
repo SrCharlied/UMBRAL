@@ -2,3 +2,4 @@
 
 pub mod procedural_surface;
 pub mod surface_placement;
+pub mod textured;

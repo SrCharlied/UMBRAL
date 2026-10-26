@@ -5,7 +5,7 @@ use super::{
     clipping::{NEAR_BIT, VertexOut, clip_near, outcode},
     framebuffer::Framebuffer,
     rasterizer::{RasterVertex, triangle_shaded},
-    shader::{Material, ShaderContext, ShaderKind, shade_fragment},
+    shader::{Color, FragmentInput, Material, ShaderContext, ShaderKind, shade_fragment},
     stats::RenderStats,
 };
 use crate::{
@@ -24,6 +24,27 @@ pub fn draw_model(
     shader: ShaderKind,
     context: &ShaderContext,
     camera: &Camera,
+) -> RenderStats {
+    draw_model_with(
+        framebuffer,
+        model,
+        transform,
+        material,
+        camera,
+        |fragment, face| shade_fragment(shader, fragment, context, face),
+    )
+}
+
+/// Igual que `draw_model`, pero cada fragmento que pasa el z-test se colorea con
+/// `shade(fragmento, material_de_la_cara)` (el `Kd` del MTL ya resuelto si el material lo
+/// pide). Punto de extension opt-in: la escena del juego sigue usando `draw_model`.
+pub fn draw_model_with(
+    framebuffer: &mut Framebuffer,
+    model: &Model,
+    transform: &Transform,
+    material: &Material,
+    camera: &Camera,
+    mut shade: impl FnMut(&FragmentInput, &Material) -> Color,
 ) -> RenderStats {
     let mut stats = RenderStats {
         objects_submitted: 1,
@@ -120,14 +141,14 @@ pub fn draw_model(
                 continue;
             }
         }
-        let mut shade = |fragment: &_| shade_fragment(shader, fragment, context, &face_material);
+        let mut shade_face = |fragment: &FragmentInput| shade(fragment, &face_material);
         // Abanico: un poligono de n vertices produce n - 2 triangulos.
         for k in 1..screen.len() - 1 {
             stats.triangles_rasterized += 1;
             let (fragments, written) = triangle_shaded(
                 framebuffer,
                 [screen[0], screen[k], screen[k + 1]],
-                &mut shade,
+                &mut shade_face,
             );
             stats.fragments_evaluated += fragments;
             stats.pixels_written += written;

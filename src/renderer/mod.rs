@@ -11,3 +11,4 @@ pub mod pipeline;
 pub mod rasterizer;
 pub mod shader;
 pub mod stats;
+pub mod texture;
