@@ -1,6 +1,6 @@
 # Arquitectura de UMBRAL
 
-Estado: **Hito 1 (Persona 1)** implementado en código; los contratos de la sección 5 existen tal como se describen abajo, pero **siguen sin aceptarse formalmente** (UMB-003) y UMB-004 (bibliotecas) sigue abierta. Persona 2 y Persona 3 deben revisarlos antes de construir encima.
+Estado: **Hito 1 (Persona 1)** implementado en código; los contratos de la sección 5 existen tal como se describen abajo, pero **siguen pendientes de firma** (§5.2, UMB-003) y UMB-004 (§8) espera respuesta del profesor. Persona 2 y Persona 3 deben revisarlos antes de construir encima.
 
 ## 0. Lo implementado en el Hito 1
 
@@ -91,30 +91,47 @@ objeto → mundo (`Transform`) → vista (cámara) → recorte (proyección, `w`
 - **Baseline heredado:** se mantiene a 1280×960 y se reproduce con `--width 1280 --height 960`; el visor heredado autoencuadra con cualquier aspecto, así que el render a 720p es otra imagen, no una regresión.
 - **Rendimiento:** no medido. No existe todavía una escena del juego con la que tenga sentido medir.
 
-## 5. Contratos propuestos (UMB-003, no acordados)
+## 5. Contratos compartidos (UMB-003)
 
-Tomados de `UMBRAL_PLAN_TECNICO.md` §5. El plan escribe `f32`; el código usa `f64` (ver D1).
+Estado: **implementados, pendientes de firma** (ver §5.2). Fuente de verdad: el código; esta tabla resume rangos, unidades y espacios. Todo es `f64` (D1), ángulos en radianes, distancias en unidades de mundo, tiempo en segundos.
 
-| Contrato | Produce | Consume | Rangos y espacios propuestos |
-|---|---|---|---|
-| `Transform { position, rotation, scale }` | Persona 1 (matemática); escena | Renderer | posición en mundo; rotación Euler en radianes (orden pendiente); escala finita y > 0 |
-| `VertexOut { clip_position, world_position, world_normal, uv, inverse_w }` | Vertex stage (Persona 1) | Rasterizador | `inverse_w = 1/w` para interpolación con corrección de perspectiva; normal unitaria en mundo |
-| `FragmentInput { screen_position, world_position, normal, uv }` | Rasterizador (Persona 1) | Shaders (Persona 3) | `screen_position` en píxeles + profundidad; normal reinterpolada y renormalizada |
-| `ShaderContext { elapsed_time, oxygen01, camera_position, ship_position, light_position }` | Persona 1 transporta; Persona 2 produce `oxygen01` | Persona 3 | `elapsed_time` en segundos ≥ 0; `oxygen01` en `0.0..=1.0`, acotado por quien lo produce; posiciones en mundo |
-| `GameplayState { oxygen01, collected_resources, collected_logs, game_over, objective_complete }` | Persona 2 | Persona 3 (solo `oxygen01`) | `oxygen01` en `0.0..=1.0`; contadores monotónicos hasta reinicio |
-| `ShaderKind` + `shade_fragment` | Persona 1 (punto de extensión) | Persona 3 (implementaciones) | Despacho por `enum`, llamado una vez por fragmento que pasa el z-test |
-| `draw_model(...) -> RenderStats` | Persona 1 | Escena y debug | No limpia el framebuffer; reemplaza el autoencuadre |
-| `RenderStats` | Renderer | Overlay (UMB-403) | Hoy existe en `legacy.rs` con `faces_processed` y `pixels_written`; se ampliará con triángulos descartados y fragmentos evaluados |
-| `Material` | Assets | Shaders | **Sin definir.** Hoy es `[f64; 3]` (`Kd`) por nombre |
+| Contrato | Dónde | Produce | Consume | Rangos y espacios |
+|---|---|---|---|---|
+| `Transform { position, rotation, scale }` | `math/matrix.rs` | Escena | Renderer | Posición en mundo; rotación Euler en radianes con `R = Ry·Rx·Rz`; `M = T·R·S`; escala finita y > 0 |
+| `RasterVertex { x, y, z, inverse_w, world_position, normal, uv }` | `renderer/rasterizer.rs` | Etapa de vértices (Persona 1) | Rasterizador | Sustituye al `VertexOut` del plan. `x, y` en píxeles; `z` profundidad NDC; `inverse_w = 1/w` para interpolar con corrección de perspectiva. `clip_position` no se conserva tras el recorte |
+| `FragmentInput { screen_position, world_position, normal, uv }` | `renderer/shader.rs` | Rasterizador (Persona 1) | Shaders (Persona 3) | `screen_position` en píxeles + profundidad; `normal` reinterpolada y renormalizada; solo se crea si el fragmento pasa el z-test |
+| `ShaderContext { elapsed_time, oxygen01, camera_position, ship_position, light_position }` | `renderer/shader.rs` | Persona 1 transporta; Persona 2 produce `oxygen01` | Persona 3 | `elapsed_time` ≥ 0 s; `oxygen01` en `0.0..=1.0` (lo acota quien lo produce); posiciones en mundo |
+| `ShaderKind` + `shade_fragment(kind, fragment, context, material)` | `renderer/shader.rs` | Persona 1 (punto de extensión) | Persona 3 (implementaciones) | Una llamada por fragmento que pasa el z-test. `LucidSurface` y `VoidEye` hoy reutilizan `LitPlanet` |
+| `Material { base_color, use_model_colors, ambient, cull_backfaces }` | `renderer/shader.rs` | Escena / Persona 3 | Shaders, pipeline | Colores lineales en `0..=1`, `ambient` en `0..=1`. Resuelve D4 en su forma mínima; Persona 3 puede ampliarlo con aviso |
+| `draw_model(...) -> RenderStats` | `renderer/pipeline.rs` | Persona 1 | Escena, debug | No limpia el framebuffer ni autoencuadra |
+| `RenderStats` | `renderer/stats.rs` | Renderer | Overlay | Contadores de objetos, vértices, triángulos (enviados, descartados, recortados, caras traseras, rasterizados), fragmentos y píxeles escritos |
+| `Camera` | `scene/camera.rs` | Persona 1 | Persona 2 (API pública) | Mano derecha, Y arriba, mira a −Z en vista; NDC `[-1,1]` |
+| `GameplayState { oxygen01, collected_resources, collected_logs, game_over, objective_complete }` | `gameplay/` (**no existe aún**) | Persona 2 | Persona 3 (solo `oxygen01`) | `oxygen01` en `0.0..=1.0`; contadores monotónicos hasta reinicio. Hoy `World` usa un valor de depuración: `TODO(UMB-205)` |
+
+### 5.1 Qué produce y qué consume cada persona
+
+- **Persona 1:** `Transform`, matrices, `Camera`, `draw_model`, `FragmentInput`, `RenderStats`. Transporta `ShaderContext` sin interpretarlo.
+- **Persona 2:** `GameplayState`; entrega `oxygen01` y la posición de la nave. Consume `Camera` y `Transform` por su API pública.
+- **Persona 3:** implementa `shade_fragment` para cada `ShaderKind`, `Material` y contenido de escena. Consume `FragmentInput`, `ShaderContext` y `oxygen01`.
+
+### 5.2 Registro de aceptación
+
+Un contrato queda cerrado cuando cada persona afectada lo confirma. Completar la fecha al aceptar; cambios posteriores solo por conversación entre los afectados.
+
+| Persona | Contratos que debe confirmar | Aceptado (fecha) |
+|---|---|---|
+| Persona 1 | Todos (autora del pipeline) | |
+| Persona 2 | `GameplayState`, `ShaderContext.oxygen01`, `Camera`, `Transform` | |
+| Persona 3 | `ShaderKind`, `shade_fragment`, `FragmentInput`, `ShaderContext`, `Material` | |
 
 ## 6. Decisiones pendientes
 
 | ID | Decisión | Quién decide | Notas |
 |---|---|---|---|
 | D1 | `f32` o `f64` para el pipeline nuevo | Persona 1 + equipo | **Resuelta provisionalmente: `f64`** en todo el código nuevo (el plan escribe `f32`). Cambiarlo es mecánico pero toca todos los módulos |
-| D2 | ¿Se permite una biblioteca matemática? ¿Se conserva `minifb` o se espera Raylib? | Equipo con el profesor (UMB-004) | Sin confirmar. No se agregó ninguna dependencia |
-| D3 | Convenciones de la sección 4 (mano, eje frontal, NDC, orden de Euler) | Persona 1 (UMB-003) | **Implementada:** mano derecha, Y arriba, la cámara mira a −Z, NDC `[-1,1]`, `R = Ry·Rx·Rz`, `M = T·R·S`. Falta que el equipo la acepte |
-| D4 | Estructura de `Material` y si los shaders leen `Kd` | Persona 1 + Persona 3 | — |
+| D2 | ¿Se permite una biblioteca matemática? ¿Se conserva `minifb` o se espera Raylib? | Equipo con el profesor (UMB-004) | **Sin respuesta del profesor.** Ver §8. Mientras tanto: `minifb` y `png` fijados, matemáticas propias, ninguna biblioteca 3D |
+| D3 | Convenciones de la sección 4 (mano, eje frontal, NDC, orden de Euler) | Persona 1 (UMB-003) | **Implementada, pendiente de firma en §5.2:** mano derecha, Y arriba, la cámara mira a −Z, NDC `[-1,1]`, `R = Ry·Rx·Rz`, `M = T·R·S`. Falta que el equipo la acepte |
+| D4 | Estructura de `Material` | Persona 1 + Persona 3 | **Resuelta provisionalmente** con `base_color`, `use_model_colors`, `ambient`, `cull_backfaces`; se confirma en §5.2 |
 | D5 | Resolución de assets: `CARGO_MANIFEST_DIR` o relativa al ejecutable | Persona 1 | Hoy el binario no es reubicable |
 | D6 | Baseline exacto en otras plataformas | Equipo | Solo verificado en Windows x86_64 con Rust 1.97.0. Si falla en otro sistema, investigar el redondeo antes de regenerar el fixture o introducir tolerancia |
 | D7 | Ruta por defecto de `P` (`renders/nave.png`, no ignorada) | Persona 3 | Comportamiento heredado sin cambios |
@@ -126,3 +143,24 @@ Tomados de `UMBRAL_PLAN_TECNICO.md` §5. El plan escribe `f32`; el código usa `
 ## 7. Validación
 
 Los cuatro comandos del README (formato, Clippy, pruebas, render headless) son el gate de cada rama. `tests/ship_baseline.rs` protege el visor heredado: mientras `legacy.rs` exista, el fixture `tests/fixtures/legacy_ship_1280x960.png` no se regenera para hacer pasar una prueba. Cuando UMB-101/102 sustituyan el visor, el equipo decide si se retira la prueba o se crea un baseline nuevo con su propio origen documentado.
+
+## 8. Restricciones de bibliotecas (UMB-004)
+
+**Estado: pendiente de respuesta del profesor.** Postura del equipo mientras tanto, que es válida con cualquier respuesta salvo "se exige Raylib":
+
+| Pieza | Decisión actual | Lo que hace | Lo que no hace |
+|---|---|---|---|
+| `minifb 0.28.0` | Ventana, teclado y presentar el buffer | Muestra un arreglo de píxeles | No dibuja, no carga geometría, no tiene 3D ni GPU |
+| `png 0.18.1` | Exportar capturas headless | Codifica PNG | Nada de render |
+| Matemáticas | Propias (`math/`: `Vec2/3/4`, `Mat4`, `Transform`) | Todo el MVP | Sin biblioteca externa; si se autoriza una, el cambio es mecánico |
+| Rasterizado, z-buffer, shaders, OBJ | Propios | Todo el pipeline | — |
+
+Regla independiente de la respuesta: no usar funciones 3D, shaders de GPU ni física externa.
+
+Si el profesor exige Raylib: se sustituye `minifb` en `src/app.rs`, que es el único módulo que toca la ventana; el renderer entrega un buffer de píxeles y no cambia.
+
+Registro de la consulta (completar):
+
+| Fecha | A quién | Pregunta | Respuesta |
+|---|---|---|---|
+| | | ¿Puede conservarse `minifb` (solo presenta un buffer) en lugar de Raylib? ¿Se permite una biblioteca matemática o deben ser propias? | |
