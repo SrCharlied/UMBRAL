@@ -7,3 +7,4 @@ pub mod debug;
 pub mod math;
 pub mod renderer;
 pub mod scene;
+pub mod visual;
