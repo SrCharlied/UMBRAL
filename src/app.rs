@@ -8,7 +8,11 @@ use crate::{
         ship::ShipInput,
         world::{SPACE_COLOR, World},
     },
-    visual::static_creature::{CreatureOptions, CreaturePlacement, StaticCreature},
+    visual::{
+        creature_reveal::{RevealSettings, step_debug_oxygen},
+        staged_creature_reveal::{CREATURE_EYE_REGION, StagedRevealSettings},
+        static_creature::{CreatureOptions, CreaturePlacement, StaticCreature},
+    },
 };
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use std::{path::PathBuf, time::Instant};
@@ -28,6 +32,13 @@ pub struct GameOptions {
     pub overlay: bool,
     /// Criatura estatica opcional (debug, opt-in); `None` deja el juego como siempre.
     pub creature: Option<CreatureOptions>,
+    /// Revelacion de la criatura por oxigeno (`--creature-reveal`, requiere la criatura).
+    pub creature_reveal: bool,
+    /// Revelacion por etapas (`--creature-reveal-stages`, requiere la criatura; excluyente
+    /// con `creature_reveal`).
+    pub creature_reveal_stages: bool,
+    /// Oxigeno de depuracion inicial en `[0, 1]` (`--debug-oxygen`, por defecto 1).
+    pub debug_oxygen: f64,
 }
 
 fn keyboard_input(window: &Window) -> ShipInput {
@@ -85,6 +96,7 @@ pub fn run_game(options: GameOptions) -> Result<(), String> {
     })?;
     let mut world = World::new(ship_model, width as f64 / height as f64)?;
     world.time = options.time;
+    world.debug_oxygen01 = options.debug_oxygen;
     world.toggles.frustum_culling = options.culling;
     world.toggles.lod = options.lod;
     if let Some(index) = options.near {
@@ -116,6 +128,35 @@ pub fn run_game(options: GameOptions) -> Result<(), String> {
         if near_creature {
             world.place_near_creature()?;
         }
+        if options.creature_reveal {
+            // Arranca ya en el objetivo del oxigeno inicial: cuadros headless deterministas.
+            world.enable_creature_reveal(RevealSettings::default());
+            let shown = world.creature_reveal().map_or(0.0, |r| r.shown());
+            println!(
+                "Revelacion por oxigeno: O2 {:.2} | visibilidad {:.0}%",
+                world.debug_oxygen01,
+                shown * 100.0
+            );
+        }
+        if options.creature_reveal_stages {
+            // Particion una vez al activar; tambien arranca ya en el objetivo del O2 inicial.
+            world.enable_staged_creature_reveal(
+                StagedRevealSettings::default(),
+                CREATURE_EYE_REGION,
+            )?;
+            let (eye, body) = world
+                .staged_creature_reveal()
+                .map_or((0.0, 0.0), |r| r.alphas());
+            let (eye_faces, body_faces) = world
+                .staged_creature_parts()
+                .map_or((0, 0), |p| (p.eye_faces(), p.body_faces()));
+            println!(
+                "Revelacion por etapas: O2 {:.2} | ojo {:.0}% cuerpo {:.1}% | caras ojo {eye_faces} cuerpo {body_faces} (region del ojo calibrada para este asset)",
+                world.debug_oxygen01,
+                eye * 100.0,
+                body * 100.0
+            );
+        }
     }
     let stats = world.render(&mut framebuffer);
     println!("{}", describe(&stats));
@@ -145,8 +186,9 @@ pub fn run_game(options: GameOptions) -> Result<(), String> {
         (0usize, Instant::now(), 0.0, 0u32);
     while window.is_open() && !window.is_key_down(Key::Escape) {
         let now = Instant::now();
+        let elapsed = now.duration_since(last).as_secs_f64();
         // Limitar dt evita saltos enormes tras arrastrar la ventana o pausar el proceso.
-        let dt = now.duration_since(last).as_secs_f64().min(0.1);
+        let dt = elapsed.min(0.1);
         last = now;
 
         if window.is_key_pressed(Key::R, KeyRepeat::No) {
@@ -182,7 +224,16 @@ pub fn run_game(options: GameOptions) -> Result<(), String> {
                 world.debug_oxygen01 = value;
             }
         }
+        // Una pulsacion por paso, sin repeticion al mantener la tecla. Los presets 1-4
+        // siguen disponibles; M/N se aplican despues si coinciden en el mismo cuadro.
+        world.debug_oxygen01 = step_debug_oxygen(
+            world.debug_oxygen01,
+            window.is_key_pressed(Key::M, KeyRepeat::No),
+            window.is_key_pressed(Key::N, KeyRepeat::No),
+        );
         world.update(&keyboard_input(&window), dt);
+        // La revelacion avanza con el tiempo real, sin el limite de `dt` de la fisica.
+        world.update_creature_reveal(elapsed);
         let stats = world.render(&mut framebuffer);
 
         if show_overlay {

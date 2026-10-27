@@ -9,7 +9,12 @@ use umbral::{
         image::save_png,
         legacy::{BACKGROUND, render_model},
     },
-    visual::{creature_viewer::validate_output_path, static_creature::CreatureOptions},
+    visual::{
+        creature_reveal::{parse_debug_oxygen, validate_reveal_flags},
+        creature_viewer::validate_output_path,
+        staged_creature_reveal::validate_staged_flags,
+        static_creature::CreatureOptions,
+    },
 };
 
 fn positive_argument(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<usize, String> {
@@ -32,6 +37,8 @@ fn run() -> Result<(), String> {
     let (mut legacy, mut time, mut near, mut culling) = (false, 0.0, None, true);
     let (mut lod, mut overlay) = (true, false);
     let (mut creature_model, mut creature_texture, mut near_creature) = (None, None, false);
+    let (mut creature_reveal, mut debug_oxygen) = (false, None);
+    let mut creature_reveal_stages = false;
     let mut args = std::env::args().skip(1);
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -70,12 +77,21 @@ fn run() -> Result<(), String> {
                 ))
             }
             "--near-creature" => near_creature = true,
+            "--creature-reveal" => creature_reveal = true,
+            "--creature-reveal-stages" => creature_reveal_stages = true,
+            "--debug-oxygen" => {
+                debug_oxygen = Some(parse_debug_oxygen(
+                    &args
+                        .next()
+                        .ok_or("Falta el valor despues de --debug-oxygen")?,
+                )?)
+            }
             "--frames" => frame_limit = Some(positive_argument(&mut args, "--frames")?),
             "--width" => width = positive_argument(&mut args, "--width")?,
             "--height" => height = positive_argument(&mut args, "--height")?,
             "--help" | "-h" => {
                 println!(
-                    "cargo run --release -- [--headless] [--output archivo.png] [--frames N] [--width N] [--height N]\nResolucion por defecto: {DEFAULT_WIDTH}x{DEFAULT_HEIGHT} (maximo {MAX_PIXELS} pixeles)\nA/D o flechas: rotar | R: restablecer | P: guardar PNG | Esc: salir\nCriatura estatica (debug, opt-in): --creature-model modelo.obj --creature-texture textura.png (siempre juntos) [--near-creature: arrancar frente a ella; R vuelve ahi]. Los flags de criatura son incompatibles con --legacy; solo el arranque --near-creature es incompatible con --near. Con criatura, --output debe ser .png y distinto de las entradas"
+                    "cargo run --release -- [--headless] [--output archivo.png] [--frames N] [--width N] [--height N]\nResolucion por defecto: {DEFAULT_WIDTH}x{DEFAULT_HEIGHT} (maximo {MAX_PIXELS} pixeles)\nA/D o flechas: rotar | R: restablecer | P: guardar PNG | Esc: salir\nCriatura estatica (debug, opt-in): --creature-model modelo.obj --creature-texture textura.png (siempre juntos) [--near-creature: arrancar frente a ella; R vuelve ahi]. Los flags de criatura son incompatibles con --legacy; solo el arranque --near-creature es incompatible con --near. Con criatura, --output debe ser .png y distinto de las entradas\nRevelacion por oxigeno (debug, opt-in): --creature-reveal (requiere la criatura; no mueve la nave) | --debug-oxygen X: oxigeno de depuracion inicial en [0, 1] (por defecto 1); teclas 1-4: 100/50/25/5 %\nRevelacion por etapas (debug, opt-in): --creature-reveal-stages (requiere la criatura; incompatible con --creature-reveal; no mueve la nave): primero el ojo y despues el cuerpo"
                 );
                 return Ok(());
             }
@@ -87,6 +103,18 @@ fn run() -> Result<(), String> {
         creature_texture,
         near_creature,
         near,
+        legacy,
+    )?;
+    validate_reveal_flags(
+        creature_reveal,
+        creature.is_some(),
+        debug_oxygen.is_some(),
+        legacy,
+    )?;
+    validate_staged_flags(
+        creature_reveal_stages,
+        creature.is_some(),
+        creature_reveal,
         legacy,
     )?;
     if let Some(creature) = &creature {
@@ -105,6 +133,9 @@ fn run() -> Result<(), String> {
             lod,
             overlay,
             creature,
+            creature_reveal,
+            creature_reveal_stages,
+            debug_oxygen: debug_oxygen.unwrap_or(1.0),
         });
     }
     let model = load_model(&ship_model_path())?;

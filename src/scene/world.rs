@@ -1,6 +1,6 @@
 //! Mundo de juego: avanza la simulacion con `dt` y dibuja un cuadro completo.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use super::{
     camera::Camera,
@@ -11,12 +11,15 @@ use crate::{
     assets::{obj::Model, primitives::uv_sphere},
     math::{Mat4, Vec3},
     renderer::{
+        clipping::Frustum,
         framebuffer::Framebuffer,
         pipeline::draw_model,
         shader::{Material, ShaderContext, ShaderKind, to_rgb8},
         stats::RenderStats,
     },
     visual::{
+        creature_reveal::{CreatureReveal, RevealCompositor, RevealPart, RevealSettings},
+        staged_creature_reveal::{EyeRegion, StagedParts, StagedReveal, StagedRevealSettings},
         static_creature::{AMBIENT, StaticCreature},
         textured::{TexturedMode, TexturedShader},
     },
@@ -79,6 +82,20 @@ pub struct World {
     pub chase_height: f64,
     /// Criatura estatica opcional (debug, opt-in); `None` en `World::new`.
     creature: Option<StaticCreature>,
+    /// Revelacion de la criatura por oxigeno (debug, opt-in); `None`: siempre visible.
+    creature_reveal: Option<CreatureReveal>,
+    /// Buffers reutilizables de la revelacion parcial; `render` toma `&self`.
+    reveal_compositor: RefCell<RevealCompositor>,
+    /// Revelacion por etapas (debug, opt-in); excluyente con `creature_reveal`.
+    staged_reveal: Option<StagedMode>,
+}
+
+/// Estado del modo por etapas: progreso, region del ojo y la particion en cache del modelo
+/// de la criatura actual (`None` sin criatura).
+struct StagedMode {
+    reveal: StagedReveal,
+    region: EyeRegion,
+    parts: Option<StagedParts>,
 }
 
 impl World {
@@ -102,6 +119,9 @@ impl World {
             chase_distance: 22.0,
             chase_height: 6.0,
             creature: None,
+            creature_reveal: None,
+            reveal_compositor: RefCell::new(RevealCompositor::new()),
+            staged_reveal: None,
         };
         world.snap_camera();
         Ok(world)
@@ -130,9 +150,11 @@ impl World {
         Ship::new(Vec3::new(0.0, 40.0, 700.0), -Vec3::Z)
     }
 
+    /// Restablece la nave; conserva el oxigeno y lleva la revelacion a su objetivo.
     pub fn reset_ship(&mut self) {
         self.ship = Self::start_ship();
         self.snap_camera();
+        self.snap_creature_reveal();
     }
 
     /// Coloca la nave a `surface_gap` unidades de la superficie del cuerpo `index`,
@@ -153,6 +175,7 @@ impl World {
             + Vec3::Y * (body.body_radius * 0.15);
         self.ship = Ship::new(eye, (center - eye).normalized());
         self.snap_camera();
+        self.snap_creature_reveal();
         Ok(())
     }
 
@@ -217,14 +240,99 @@ impl World {
             self.system.light_position(),
             AMBIENT,
         )?;
+        // Con el modo por etapas, la nueva particion se calcula antes del cambio: si falla,
+        // se devuelve el error y la criatura y la cache anteriores siguen intactas.
+        let parts = self
+            .staged_reveal
+            .as_ref()
+            .map(|m| StagedParts::split(creature.model(), &m.region))
+            .transpose()?;
+        if let Some(mode) = &mut self.staged_reveal {
+            mode.parts = parts;
+        }
         self.creature = Some(creature);
+        self.snap_creature_reveal();
         Ok(())
     }
+    /// Quita la criatura; con el modo por etapas suelta tambien su particion en cache.
     pub fn clear_creature(&mut self) -> Option<StaticCreature> {
+        if let Some(mode) = &mut self.staged_reveal {
+            mode.parts = None;
+        }
         self.creature.take()
     }
     pub fn creature(&self) -> Option<&StaticCreature> {
         self.creature.as_ref()
+    }
+    /// Activa la revelacion por oxigeno (debug, opt-in) ya en el objetivo del oxigeno actual.
+    /// Sobrevive a `clear_creature`/`set_creature`; sin criatura no dibuja nada. Desactiva el
+    /// modo por etapas si estaba activo (excluyentes; gana el ultimo).
+    pub fn enable_creature_reveal(&mut self, settings: RevealSettings) {
+        self.creature_reveal = Some(CreatureReveal::new(settings, self.debug_oxygen01));
+        self.staged_reveal = None;
+    }
+    /// Vuelve a la criatura estatica siempre visible.
+    pub fn disable_creature_reveal(&mut self) {
+        self.creature_reveal = None;
+    }
+    pub fn creature_reveal(&self) -> Option<CreatureReveal> {
+        self.creature_reveal
+    }
+    /// Paso visual del efecto con segundos **reales** transcurridos, separado de `update`: no
+    /// usa el `dt` limitado de la fisica, no suma al tiempo orbital y `F5` no lo congela.
+    pub fn update_creature_reveal(&mut self, elapsed_seconds: f64) {
+        if let Some(reveal) = &mut self.creature_reveal {
+            reveal.update(self.debug_oxygen01, elapsed_seconds);
+        }
+        if let Some(mode) = &mut self.staged_reveal {
+            mode.reveal.update(self.debug_oxygen01, elapsed_seconds);
+        }
+    }
+    /// Memoria de los buffers del compositor de revelacion parcial (0 si nunca hizo falta).
+    pub fn creature_reveal_buffer_bytes(&self) -> usize {
+        self.reveal_compositor.borrow().buffer_bytes()
+    }
+    /// Activa la revelacion por etapas (debug, opt-in), ya en el objetivo del oxigeno actual.
+    /// Si hay criatura, parte su modelo en ojo y cuerpo **ahora** (una vez); si la region no
+    /// sirve devuelve `Err` y el mundo queda como estaba. Sustituye a la revelacion uniforme
+    /// (V1): los dos modos son excluyentes y gana el ultimo que se activa.
+    pub fn enable_staged_creature_reveal(
+        &mut self,
+        settings: StagedRevealSettings,
+        region: EyeRegion,
+    ) -> Result<(), String> {
+        let parts = self
+            .creature
+            .as_ref()
+            .map(|c| StagedParts::split(c.model(), &region))
+            .transpose()?;
+        self.staged_reveal = Some(StagedMode {
+            reveal: StagedReveal::new(settings, self.debug_oxygen01),
+            region,
+            parts,
+        });
+        self.creature_reveal = None;
+        Ok(())
+    }
+    /// Vuelve a la criatura estatica siempre visible y suelta la particion.
+    pub fn disable_staged_creature_reveal(&mut self) {
+        self.staged_reveal = None;
+    }
+    pub fn staged_creature_reveal(&self) -> Option<StagedReveal> {
+        self.staged_reveal.as_ref().map(|m| m.reveal)
+    }
+    /// Particion en cache de la criatura actual (solo con el modo por etapas y criatura).
+    pub fn staged_creature_parts(&self) -> Option<&StagedParts> {
+        self.staged_reveal.as_ref().and_then(|m| m.parts.as_ref())
+    }
+    /// Lleva el efecto al objetivo del oxigeno actual sin transicion.
+    pub fn snap_creature_reveal(&mut self) {
+        if let Some(reveal) = &mut self.creature_reveal {
+            reveal.snap(self.debug_oxygen01);
+        }
+        if let Some(mode) = &mut self.staged_reveal {
+            mode.reveal.snap(self.debug_oxygen01);
+        }
     }
     /// Coloca la nave frente a la criatura mirandola (`CreaturePlacement::spawn_pose`). No
     /// cambia el tiempo ni los cuerpos; repetirla da exactamente el mismo arranque.
@@ -236,6 +344,7 @@ impl World {
         let (position, forward) = creature.placement().spawn_pose();
         self.ship = Ship::new(position, forward);
         self.snap_camera();
+        self.snap_creature_reveal();
         Ok(())
     }
 
@@ -287,9 +396,20 @@ impl World {
             drawn.objects_submitted = 0; // ya contado arriba
             stats += drawn;
         }
-        if let Some(creature) = &self.creature {
-            let frustum = self.toggles.frustum_culling.then_some(&frustum);
-            match creature.render(fb, &self.camera, frustum, context.light_position) {
+        // Sin revelacion la criatura es opaca (1). En 0 ni se dibuja ni se cuenta, igual que
+        // sin criatura; en 1 se dibuja aqui, como la estatica; parcial, al final (ver abajo).
+        // Con etapas, `alpha` es la del ojo: el cuerpo solo es positivo con el ojo en 1, y la
+        // ruta estatica exige ambos en 1.
+        let alpha = self.creature_reveal.map_or(1.0, |r| r.shown());
+        let (alpha, body_alpha) = self
+            .staged_reveal
+            .as_ref()
+            .map_or((alpha, alpha), |m| m.reveal.alphas());
+        let creature = self.creature.as_ref().filter(|_| alpha > 0.0);
+        let creature_frustum = self.toggles.frustum_culling.then_some(&frustum);
+        let opaque = alpha >= 1.0 && body_alpha >= 1.0;
+        if let Some(creature) = creature.filter(|_| opaque) {
+            match creature.render(fb, &self.camera, creature_frustum, context.light_position) {
                 Ok(drawn) => stats += drawn,
                 // `set_creature` ya valido la luz y `light_position` es constante.
                 Err(error) => debug_assert!(false, "criatura sin dibujar: {error}"),
@@ -312,7 +432,84 @@ impl World {
                 &self.camera,
             )
         };
+        // Parcial: fantasma de una capa sobre el cuadro real completo (nave incluida). Tiene
+        // que ser lo ultimo en 3D: deja su profundidad en el z-buffer (`RevealCompositor`).
+        if let Some(creature) = creature.filter(|_| !opaque) {
+            let drawn = match &self.staged_reveal {
+                None => self.reveal_compositor.borrow_mut().render(
+                    fb,
+                    creature,
+                    &self.camera,
+                    creature_frustum,
+                    context.light_position,
+                    alpha,
+                ),
+                Some(mode) => self.render_staged(
+                    fb,
+                    creature,
+                    mode.parts.as_ref(),
+                    creature_frustum,
+                    context.light_position,
+                    (alpha, body_alpha),
+                ),
+            };
+            match drawn {
+                Ok(drawn) => stats += drawn,
+                Err(error) => debug_assert!(false, "criatura sin dibujar: {error}"),
+            }
+        }
         stats
+    }
+
+    /// Etapas parciales, al final del 3D: el descarte usa la esfera de la criatura completa
+    /// (descartada se cuenta como la estatica y no se copia nada); despues el ojo y, solo con
+    /// el ojo opaco, el cuerpo, cada uno con `RevealCompositor::render_part` y la textura y
+    /// el transform de la criatura original. Cuenta **una** criatura logica y los vertices,
+    /// triangulos y fragmentos que dibujan sus dos partes.
+    fn render_staged(
+        &self,
+        fb: &mut Framebuffer,
+        creature: &StaticCreature,
+        parts: Option<&StagedParts>,
+        frustum: Option<&Frustum>,
+        light_position: Vec3,
+        (eye_alpha, body_alpha): (f64, f64),
+    ) -> Result<RenderStats, String> {
+        let placement = creature.placement();
+        if frustum.is_some_and(|f| !f.sphere_visible(placement.center(), placement.world_radius()))
+        {
+            return creature.render(fb, &self.camera, frustum, light_position);
+        }
+        let parts = parts.ok_or("modo por etapas sin particion de la criatura")?;
+        debug_assert!(
+            body_alpha <= 0.0 || eye_alpha >= 1.0,
+            "cuerpo con ojo parcial"
+        );
+        let transform = creature.transform();
+        let part = |model| RevealPart {
+            model,
+            transform: &transform,
+            texture: creature.texture(),
+        };
+        let mut compositor = self.reveal_compositor.borrow_mut();
+        let mut stats = compositor.render_part(
+            fb,
+            part(parts.eye()),
+            &self.camera,
+            light_position,
+            eye_alpha,
+        )?;
+        if body_alpha > 0.0 {
+            stats += compositor.render_part(
+                fb,
+                part(parts.body()),
+                &self.camera,
+                light_position,
+                body_alpha,
+            )?;
+        }
+        stats.objects_submitted = 1;
+        Ok(stats)
     }
 }
 
