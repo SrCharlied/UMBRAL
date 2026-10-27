@@ -1,5 +1,6 @@
 //! Identidad visual y mundo procedural. Propietario: Persona 3 (ver `docs/architecture.md`).
 
+pub mod creature_eye_follow;
 pub mod creature_reveal;
 pub mod creature_viewer;
 pub mod procedural_surface;
