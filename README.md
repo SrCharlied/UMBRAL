@@ -112,6 +112,8 @@ Preview técnico de un OBJ con textura PNG en CPU (vista separada del juego, sin
 
 Visor interactivo de la criatura con cámara orbital (ventana técnica aislada, sin integrar): [`docs/creature-viewer.md`](docs/creature-viewer.md).
 
+Criatura estática dentro del juego, ruta debug opt-in con `--creature-model`/`--creature-texture` (sin flags, el juego no cambia): [`docs/static-creature.md`](docs/static-creature.md).
+
 ## Limitaciones conocidas
 
 - Los tres planetas comparten esfera y el shader iluminado; solo cambian tamaño, color y órbita. La identidad propia (UMB-302), props, procedural y shaders de Asfixia Lúcida son de Persona 3.

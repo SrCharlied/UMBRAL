@@ -8,6 +8,7 @@ use crate::{
         ship::ShipInput,
         world::{SPACE_COLOR, World},
     },
+    visual::static_creature::{CreatureOptions, CreaturePlacement, StaticCreature},
 };
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use std::{path::PathBuf, time::Instant};
@@ -25,6 +26,8 @@ pub struct GameOptions {
     pub culling: bool,
     pub lod: bool,
     pub overlay: bool,
+    /// Criatura estatica opcional (debug, opt-in); `None` deja el juego como siempre.
+    pub creature: Option<CreatureOptions>,
 }
 
 fn keyboard_input(window: &Window) -> ShipInput {
@@ -87,6 +90,33 @@ pub fn run_game(options: GameOptions) -> Result<(), String> {
     if let Some(index) = options.near {
         world.place_near(index, 25.0)?;
     }
+    let near_creature = options.creature.as_ref().is_some_and(|c| c.near);
+    if let Some(requested) = &options.creature {
+        // Se carga una sola vez; el mundo toma posesion del modelo y la textura.
+        let start = Instant::now();
+        let creature = StaticCreature::load(
+            &requested.model,
+            &requested.texture,
+            CreaturePlacement::demo(),
+        )?;
+        let (placement, texture) = (creature.placement(), creature.texture());
+        println!(
+            "Criatura: {} vertices, {} triangulos, textura {}x{} | carga {:.0} ms | centro ({}, {}, {}) radio {} (ubicacion de demostracion)",
+            creature.model().vertices.len(),
+            creature.model().faces.len(),
+            texture.width(),
+            texture.height(),
+            start.elapsed().as_secs_f64() * 1000.0,
+            placement.center().x,
+            placement.center().y,
+            placement.center().z,
+            placement.world_radius()
+        );
+        world.set_creature(creature)?;
+        if near_creature {
+            world.place_near_creature()?;
+        }
+    }
     let stats = world.render(&mut framebuffer);
     println!("{}", describe(&stats));
     let mut show_overlay = options.overlay;
@@ -120,7 +150,12 @@ pub fn run_game(options: GameOptions) -> Result<(), String> {
         last = now;
 
         if window.is_key_pressed(Key::R, KeyRepeat::No) {
-            world.reset_ship();
+            if near_creature {
+                // Con --near-creature, R vuelve al arranque frente a la criatura.
+                world.place_near_creature()?;
+            } else {
+                world.reset_ship();
+            }
         }
         if window.is_key_pressed(Key::F3, KeyRepeat::No) {
             world.toggles.frustum_culling ^= true;

@@ -9,6 +9,7 @@ use umbral::{
         image::save_png,
         legacy::{BACKGROUND, render_model},
     },
+    visual::{creature_viewer::validate_output_path, static_creature::CreatureOptions},
 };
 
 fn positive_argument(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<usize, String> {
@@ -30,6 +31,7 @@ fn run() -> Result<(), String> {
     let mut output = PathBuf::from("renders/nave.png");
     let (mut legacy, mut time, mut near, mut culling) = (false, 0.0, None, true);
     let (mut lod, mut overlay) = (true, false);
+    let (mut creature_model, mut creature_texture, mut near_creature) = (None, None, false);
     let mut args = std::env::args().skip(1);
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -55,17 +57,40 @@ fn run() -> Result<(), String> {
                         .ok_or("--near necesita el indice de un cuerpo (0 = Sol)")?,
                 )
             }
+            "--creature-model" => {
+                creature_model = Some(PathBuf::from(
+                    args.next()
+                        .ok_or("Falta la ruta despues de --creature-model")?,
+                ))
+            }
+            "--creature-texture" => {
+                creature_texture = Some(PathBuf::from(
+                    args.next()
+                        .ok_or("Falta la ruta despues de --creature-texture")?,
+                ))
+            }
+            "--near-creature" => near_creature = true,
             "--frames" => frame_limit = Some(positive_argument(&mut args, "--frames")?),
             "--width" => width = positive_argument(&mut args, "--width")?,
             "--height" => height = positive_argument(&mut args, "--height")?,
             "--help" | "-h" => {
                 println!(
-                    "cargo run --release -- [--headless] [--output archivo.png] [--frames N] [--width N] [--height N]\nResolucion por defecto: {DEFAULT_WIDTH}x{DEFAULT_HEIGHT} (maximo {MAX_PIXELS} pixeles)\nA/D o flechas: rotar | R: restablecer | P: guardar PNG | Esc: salir"
+                    "cargo run --release -- [--headless] [--output archivo.png] [--frames N] [--width N] [--height N]\nResolucion por defecto: {DEFAULT_WIDTH}x{DEFAULT_HEIGHT} (maximo {MAX_PIXELS} pixeles)\nA/D o flechas: rotar | R: restablecer | P: guardar PNG | Esc: salir\nCriatura estatica (debug, opt-in): --creature-model modelo.obj --creature-texture textura.png (siempre juntos) [--near-creature: arrancar frente a ella; R vuelve ahi]. Los flags de criatura son incompatibles con --legacy; solo el arranque --near-creature es incompatible con --near. Con criatura, --output debe ser .png y distinto de las entradas"
                 );
                 return Ok(());
             }
             _ => return Err(format!("Argumento desconocido: {argument}. Usa --help.")),
         }
+    }
+    let creature = CreatureOptions::from_flags(
+        creature_model,
+        creature_texture,
+        near_creature,
+        near,
+        legacy,
+    )?;
+    if let Some(creature) = &creature {
+        validate_output_path(&output, &[&creature.model, &creature.texture])?;
     }
     if !legacy {
         return run_game(GameOptions {
@@ -79,6 +104,7 @@ fn run() -> Result<(), String> {
             culling,
             lod,
             overlay,
+            creature,
         });
     }
     let model = load_model(&ship_model_path())?;

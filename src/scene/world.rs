@@ -16,6 +16,10 @@ use crate::{
         shader::{Material, ShaderContext, ShaderKind, to_rgb8},
         stats::RenderStats,
     },
+    visual::{
+        static_creature::{AMBIENT, StaticCreature},
+        textured::{TexturedMode, TexturedShader},
+    },
 };
 
 /// Anillos x segmentos por nivel de detalle, del mas fino al mas grueso.
@@ -73,6 +77,8 @@ pub struct World {
     camera_basis: Mat4,
     pub chase_distance: f64,
     pub chase_height: f64,
+    /// Criatura estatica opcional (debug, opt-in); `None` en `World::new`.
+    creature: Option<StaticCreature>,
 }
 
 impl World {
@@ -95,6 +101,7 @@ impl World {
             camera_basis: Mat4::IDENTITY,
             chase_distance: 22.0,
             chase_height: 6.0,
+            creature: None,
         };
         world.snap_camera();
         Ok(world)
@@ -201,6 +208,37 @@ impl World {
         let _ = self.camera.set_lens(fov, c.aspect, c.near, c.far);
     }
 
+    /// Anade la criatura estatica (debug, opt-in). Comprueba antes que la luz del mundo sirve
+    /// a su shader, para no descubrirlo al dibujar.
+    pub fn set_creature(&mut self, creature: StaticCreature) -> Result<(), String> {
+        TexturedShader::new(
+            creature.texture(),
+            TexturedMode::Lit,
+            self.system.light_position(),
+            AMBIENT,
+        )?;
+        self.creature = Some(creature);
+        Ok(())
+    }
+    pub fn clear_creature(&mut self) -> Option<StaticCreature> {
+        self.creature.take()
+    }
+    pub fn creature(&self) -> Option<&StaticCreature> {
+        self.creature.as_ref()
+    }
+    /// Coloca la nave frente a la criatura mirandola (`CreaturePlacement::spawn_pose`). No
+    /// cambia el tiempo ni los cuerpos; repetirla da exactamente el mismo arranque.
+    pub fn place_near_creature(&mut self) -> Result<(), String> {
+        let creature = self
+            .creature
+            .as_ref()
+            .ok_or("No hay criatura: usa --creature-model y --creature-texture")?;
+        let (position, forward) = creature.placement().spawn_pose();
+        self.ship = Ship::new(position, forward);
+        self.snap_camera();
+        Ok(())
+    }
+
     fn context(&self) -> ShaderContext {
         ShaderContext {
             elapsed_time: self.time,
@@ -211,7 +249,7 @@ impl World {
         }
     }
 
-    /// Dibuja el cuadro completo: fondo, estrellas, cuerpos y nave.
+    /// Dibuja el cuadro completo: fondo, estrellas, cuerpos, criatura (si la hay) y nave.
     pub fn render(&self, fb: &mut Framebuffer) -> RenderStats {
         fb.clear();
         let mut stats = RenderStats::default();
@@ -248,6 +286,14 @@ impl World {
             );
             drawn.objects_submitted = 0; // ya contado arriba
             stats += drawn;
+        }
+        if let Some(creature) = &self.creature {
+            let frustum = self.toggles.frustum_culling.then_some(&frustum);
+            match creature.render(fb, &self.camera, frustum, context.light_position) {
+                Ok(drawn) => stats += drawn,
+                // `set_creature` ya valido la luz y `light_position` es constante.
+                Err(error) => debug_assert!(false, "criatura sin dibujar: {error}"),
+            }
         }
         let ship_transform = self.ship.transform(SHIP_MODEL_YAW);
         stats.objects_submitted += 1;

@@ -2,5 +2,6 @@
 
 pub mod creature_viewer;
 pub mod procedural_surface;
+pub mod static_creature;
 pub mod surface_placement;
 pub mod textured;
