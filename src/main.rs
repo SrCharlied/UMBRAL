@@ -1,7 +1,10 @@
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use std::path::PathBuf;
 use umbral::{
-    app::{GameOptions, run_game},
+    app::{
+        GameOptions, run_game, run_game_with_distant_turn, run_game_with_eye_comparison,
+        run_game_with_horizontal_follow, run_game_with_solar_reveal,
+    },
     assets::{obj::load_model, ship_model_path},
     config::{DEFAULT_HEIGHT, DEFAULT_WIDTH},
     renderer::{
@@ -10,8 +13,13 @@ use umbral::{
         legacy::{BACKGROUND, render_model},
     },
     visual::{
+        creature_distant_turn::validate_distant_turn_flags,
+        creature_eye_comparison::validate_eye_compare_flags,
+        creature_eye_follow::validate_eye_follow_flags,
+        creature_horizontal_follow::validate_horizontal_follow_flags,
         creature_reveal::{parse_debug_oxygen, validate_reveal_flags},
         creature_viewer::validate_output_path,
+        solar_game::{SolarRevealRequest, validate_solar_reveal_flags},
         staged_creature_reveal::validate_staged_flags,
         static_creature::CreatureOptions,
     },
@@ -38,7 +46,9 @@ fn run() -> Result<(), String> {
     let (mut lod, mut overlay) = (true, false);
     let (mut creature_model, mut creature_texture, mut near_creature) = (None, None, false);
     let (mut creature_reveal, mut debug_oxygen) = (false, None);
-    let mut creature_reveal_stages = false;
+    let (mut creature_reveal_stages, mut creature_eye_follow) = (false, false);
+    let (mut creature_eye_compare, mut creature_distant_turn) = (false, false);
+    let (mut creature_horizontal_follow, mut creature_solar_reveal) = (false, false);
     let mut args = std::env::args().skip(1);
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -79,6 +89,11 @@ fn run() -> Result<(), String> {
             "--near-creature" => near_creature = true,
             "--creature-reveal" => creature_reveal = true,
             "--creature-reveal-stages" => creature_reveal_stages = true,
+            "--creature-eye-follow" => creature_eye_follow = true,
+            "--creature-eye-compare" => creature_eye_compare = true,
+            "--creature-distant-turn" => creature_distant_turn = true,
+            "--creature-horizontal-follow" => creature_horizontal_follow = true,
+            "--creature-solar-reveal" => creature_solar_reveal = true,
             "--debug-oxygen" => {
                 debug_oxygen = Some(parse_debug_oxygen(
                     &args
@@ -91,7 +106,7 @@ fn run() -> Result<(), String> {
             "--height" => height = positive_argument(&mut args, "--height")?,
             "--help" | "-h" => {
                 println!(
-                    "cargo run --release -- [--headless] [--output archivo.png] [--frames N] [--width N] [--height N]\nResolucion por defecto: {DEFAULT_WIDTH}x{DEFAULT_HEIGHT} (maximo {MAX_PIXELS} pixeles)\nA/D o flechas: rotar | R: restablecer | P: guardar PNG | Esc: salir\nCriatura estatica (debug, opt-in): --creature-model modelo.obj --creature-texture textura.png (siempre juntos) [--near-creature: arrancar frente a ella; R vuelve ahi]. Los flags de criatura son incompatibles con --legacy; solo el arranque --near-creature es incompatible con --near. Con criatura, --output debe ser .png y distinto de las entradas\nRevelacion por oxigeno (debug, opt-in): --creature-reveal (requiere la criatura; no mueve la nave) | --debug-oxygen X: oxigeno de depuracion inicial en [0, 1] (por defecto 1); teclas 1-4: 100/50/25/5 %\nRevelacion por etapas (debug, opt-in): --creature-reveal-stages (requiere la criatura; incompatible con --creature-reveal; no mueve la nave): primero el ojo y despues el cuerpo"
+                    "cargo run --release -- [--headless] [--output archivo.png] [--frames N] [--width N] [--height N]\nResolucion por defecto: {DEFAULT_WIDTH}x{DEFAULT_HEIGHT} (maximo {MAX_PIXELS} pixeles)\nA/D o flechas: rotar | R: restablecer | P: guardar PNG | Esc: salir\nCriatura estatica (debug, opt-in): --creature-model modelo.obj --creature-texture textura.png (siempre juntos) [--near-creature: arrancar frente a ella; R vuelve ahi]. Los flags de criatura son incompatibles con --legacy; solo el arranque --near-creature es incompatible con --near. Con criatura, --output debe ser .png y distinto de las entradas\nRevelacion por oxigeno (debug, opt-in): --creature-reveal (requiere la criatura; no mueve la nave) | --debug-oxygen X: oxigeno de depuracion inicial en [0, 1] (por defecto 1); teclas 1-4: 100/50/25/5 %\nRevelacion por etapas (debug, opt-in): --creature-reveal-stages (requiere la criatura; incompatible con --creature-reveal; no mueve la nave): primero el ojo y despues el cuerpo\nMirada local (debug, opt-in): --creature-eye-follow (requiere --creature-reveal-stages): el ojo mira a la nave dentro de sus limites; cuerpo y tentaculos quietos\nComparacion de la mirada (debug, opt-in): --creature-eye-compare (requiere --creature-eye-follow): arranca mirando a la camara; G alterna NAVE/CAMARA; panel inferior\nGiro global lejano (candidata, debug, opt-in): --creature-distant-turn (requiere --creature-eye-compare): de lejos la criatura entera gira lenta y limitada (20/12 grados, t95 8 s) hacia el punto de G; de cerca solo el ojo. Arranca LEJOS; H giro ON/OFF, 7 CERCA, 8 LEJOS, R repite el preset\nSeguimiento horizontal (candidata 02, debug, opt-in): --creature-horizontal-follow (requiere --creature-eye-compare; no con --creature-distant-turn): cerca y lejos el cuerpo entero gira solo en horizontal, lento (t95 4 s, tope 18 grados/s), hacia el punto de G en cualquier lado. Arranca LEJOS; H seguimiento ON/OFF (OFF vuelve al frente), 7 CERCA, 8 LEJOS, R repite el preset\nSol con ojo (composicion aprobada 03, opt-in): --creature-solar-reveal (requiere --creature-model y --creature-texture; implica etapas, mirada, comparacion y seguimiento horizontal 02, que pueden repetirse; no con --legacy, --creature-reveal, --near, --near-creature ni --creature-distant-turn): la criatura en el centro del Sol (radio 80, yaw 0), mirada a la camara y luz de camara; arranca FRONTAL. 7 FRONTAL, 8 OBLICUA, R vuelve a FRONTAL, H seguimiento ON/OFF, G CAMARA/NAVE, 1-4 y M/N el O2 (titulo de la ventana)"
                 );
                 return Ok(());
             }
@@ -105,6 +120,25 @@ fn run() -> Result<(), String> {
         near,
         legacy,
     )?;
+    // Antes que los demas: el flag solar implica etapas, mirada, comparacion y seguimiento
+    // horizontal (redundantes si se pasan) y rechaza las rutas que cambian su composicion.
+    validate_solar_reveal_flags(
+        creature_solar_reveal,
+        SolarRevealRequest {
+            has_creature: creature.is_some(),
+            legacy,
+            near_body: near.is_some(),
+            near_creature,
+            uniform_reveal: creature_reveal,
+            distant_turn: creature_distant_turn,
+        },
+    )?;
+    if creature_solar_reveal {
+        creature_reveal_stages = true;
+        creature_eye_follow = true;
+        creature_eye_compare = true;
+        creature_horizontal_follow = true;
+    }
     validate_reveal_flags(
         creature_reveal,
         creature.is_some(),
@@ -117,11 +151,36 @@ fn run() -> Result<(), String> {
         creature_reveal,
         legacy,
     )?;
+    validate_eye_follow_flags(
+        creature_eye_follow,
+        creature_reveal_stages,
+        creature.is_some(),
+        legacy,
+    )?;
+    validate_eye_compare_flags(creature_eye_compare, creature_eye_follow, legacy)?;
+    validate_distant_turn_flags(creature_distant_turn, creature_eye_compare, legacy)?;
+    validate_horizontal_follow_flags(
+        creature_horizontal_follow,
+        creature_eye_compare,
+        creature_distant_turn,
+        legacy,
+    )?;
     if let Some(creature) = &creature {
         validate_output_path(&output, &[&creature.model, &creature.texture])?;
     }
     if !legacy {
-        return run_game(GameOptions {
+        let game = if creature_solar_reveal {
+            run_game_with_solar_reveal
+        } else if creature_horizontal_follow {
+            run_game_with_horizontal_follow
+        } else if creature_distant_turn {
+            run_game_with_distant_turn
+        } else if creature_eye_compare {
+            run_game_with_eye_comparison
+        } else {
+            run_game
+        };
+        return game(GameOptions {
             width,
             height,
             headless,
@@ -135,6 +194,7 @@ fn run() -> Result<(), String> {
             creature,
             creature_reveal,
             creature_reveal_stages,
+            creature_eye_follow,
             debug_oxygen: debug_oxygen.unwrap_or(1.0),
         });
     }

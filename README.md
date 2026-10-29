@@ -2,7 +2,7 @@
 
 Proyecto final de Gráficas por Computadora: exploración de un sistema solar pequeño desde una nave deteriorada, con un renderizador 3D **por software** escrito en Rust.
 
-> **Estado actual: Hito 1 (parte de Persona 1).** Hay pipeline 3D por software con matrices modelo-vista-proyección, recorte contra el plano cercano, z-buffer, atributos interpolados con corrección de perspectiva y shader de fragmentos por `enum`. La escena tiene un Sol, tres planetas que orbitan y rotan según el tiempo, y la nave con vuelo básico. **Aún no hay** oxígeno, recursos, registros, planetas con identidad propia, procedural ni Asfixia Lúcida.
+> **Estado actual:** pipeline 3D por software, nave pilotable, Sol y tres planetas con órbitas y rotación. Está integrada como opción explícita la composición aprobada del **Sol con ojo**: una criatura texturizada se revela según el oxígeno de depuración y sigue al observador en horizontal. La distribución procedural y el anclaje sobre esferas tienen APIs y vistas técnicas, pero todavía no se aplican a los planetas del juego. **Aún no hay** consumo real de oxígeno, recursos, registros ni identidad propia de los tres planetas.
 
 ![Acercamiento a Antena con el overlay técnico](docs/img/overlay.png)
 
@@ -24,14 +24,17 @@ cargo run --release --locked
 | Flechas arriba/abajo | Cabeceo |
 | `Q` / `E` | Alabeo |
 | `Shift` | Impulso ×5 para cruzar el sistema |
-| `R` | Reiniciar la nave |
+| `R` | Reiniciar la nave; en el modo solar, volver a la vista frontal |
 | `P` | Guardar el framebuffer actual en PNG |
 | `F1` | Mostrar/ocultar el overlay técnico (FPS, contadores de trabajo, interruptores) |
 | `F3` | Activar/desactivar el descarte por frustum |
 | `F4` | Activar/desactivar el nivel de detalle (LOD) |
 | `F5` | Congelar/reanudar las órbitas |
 | `F6` | Activar/desactivar el descarte de caras traseras |
-| `1`–`4` | Oxígeno de depuración 100 / 50 / 25 / 5 % (aún sin efecto visual) |
+| `1`–`4` | Oxígeno de depuración 100 / 50 / 25 / 5 %; controla la revelación en los modos de criatura |
+| `M` / `N` | Subir / bajar el oxígeno de depuración en pasos de 5 puntos |
+| `7` / `8` | En el modo solar: vista frontal / oblicua |
+| `G` / `H` | En el modo solar: objetivo cámara/nave / seguimiento horizontal ON/OFF |
 | `Esc` | Salir |
 
 El título de la ventana muestra FPS, velocidad y contadores (triángulos enviados, descartados y rasterizados, fragmentos).
@@ -39,6 +42,16 @@ El título de la ventana muestra FPS, velocidad y contadores (triángulos enviad
 Opciones: `--headless`, `--output archivo.png`, `--frames N` (cierra la ventana tras N frames), `--width N`, `--height N`, `--time S` (tiempo simulado inicial), `--near CUERPO` (arranca junto al cuerpo 0 = Sol, 1 = Antena, 2 = Osario, 3 = Vigilia), `--no-culling`, `--no-lod`, `--overlay` (dibuja el overlay también en `--headless`), `--legacy` (visor ortográfico heredado, donde `A`/`D` rotan la nave), `--help`.
 
 Medición de rendimiento sin ventana: `cargo run --release --example frame_time`.
+
+### Sol con ojo integrado
+
+```bash
+cargo run --release --locked -- --creature-model ruta/modelo.obj --creature-texture ruta/textura.png --creature-solar-reveal
+```
+
+La criatura usa assets externos que no se incluyen en el repositorio. El flag activa las etapas, la mirada a la cámara y el seguimiento horizontal aprobados; no requiere repetir sus flags individuales. Empieza en la vista frontal con oxígeno al 100 %, el Sol normal y las órbitas vivas. La revelación se prueba con `M`/`N` o los presets `1`–`4`: al 50 % exacto el ojo aún está oculto; aparece al bajar de ese umbral. El Sol visual se desvanece entre 30 y 25 %, sin apagar la iluminación global ni eliminar el cuerpo celeste lógico.
+
+Sin el flag y sin assets externos se conserva el juego base. La composición está aceptada por Charlie; los detalles, restricciones, controles y pruebas están en [`docs/static-creature.md`](docs/static-creature.md#sol-con-ojo-en-el-juego-creature-solar-reveal). No se añade consumo automático de oxígeno ni colisiones.
 
 ### Resolución
 
@@ -48,9 +61,9 @@ Medición de rendimiento sin ventana: `cargo run --release --example frame_time`
 | `--width N` / `--height N` | Enteros positivos; cada uno sustituye su valor por defecto de forma independiente |
 | Límite | `width × height ≤ 16 777 216` píxeles (`MAX_PIXELS`, equivale a 4096×4096), validado por `Framebuffer::new` antes de reservar memoria, incluido el desbordamiento de la multiplicación |
 
-La ventana y el framebuffer se crean con las mismas dimensiones: no hay escalado ni cambio de tamaño de ventana. Un valor faltante, no entero, cero o demasiado grande termina con código 1 y un mensaje en `Error: ...`, sin escribir PNG ni abrir ventana. No se ha medido rendimiento a ninguna resolución: todavía no existe la escena del juego.
+La ventana y el framebuffer se crean con las mismas dimensiones: no hay escalado ni cambio de tamaño de ventana. Un valor faltante, no entero, cero o demasiado grande termina con código 1 y un mensaje en `Error: ...`, sin escribir PNG ni abrir ventana. Las pruebas de corrección y los renders de regresión no constituyen un benchmark de la escena con la criatura.
 
-- La rotación avanza 0.03 rad **por frame**, no por tiempo: es comportamiento heredado y se sustituye en UMB-106.
+- Solo en `--legacy`, la rotación avanza 0.03 rad **por frame**: es el comportamiento heredado. El vuelo del juego depende de `dt`.
 - `P` escribe por defecto en `renders/nave.png`, ruta que `.gitignore` no excluye. Para pruebas manuales conviene `--output renders/tmp/vista.png`.
 - Los controles se documentan a partir del código; su validación manual en ventana corresponde a Charlie y **no está registrada todavía**.
 
@@ -112,7 +125,7 @@ Preview técnico de un OBJ con textura PNG en CPU (vista separada del juego, sin
 
 Visor interactivo de la criatura con cámara orbital (ventana técnica aislada, sin integrar): [`docs/creature-viewer.md`](docs/creature-viewer.md).
 
-Criatura estática dentro del juego, ruta debug opt-in con `--creature-model`/`--creature-texture` (sin flags, el juego no cambia): [`docs/static-creature.md`](docs/static-creature.md).
+Criatura texturizada dentro del juego: ruta estática, revelación por oxígeno, mirada, seguimiento horizontal y Sol con ojo integrado mediante flags explícitos; sin ellos, el juego no cambia: [`docs/static-creature.md`](docs/static-creature.md).
 
 ## Limitaciones conocidas
 
@@ -142,4 +155,5 @@ Criatura estática dentro del juego, ruta debug opt-in con `--creature-model`/`-
 ## Uso de asistencia de IA
 
 - **UMB-001/UMB-002** (importación, renombre, reorganización de módulos, prueba de regresión de la nave y esta documentación inicial) se realizaron con **Claude Code** (Anthropic) bajo dirección de Charlie, con planificación y revisión apoyadas por un asistente de IA local. La revisión humana de este trabajo está pendiente.
+- La integración de la criatura, su seguimiento y el Sol con ojo se realizó con asistencia de Claude Code y supervisión del asistente local; Charlie aprobó la composición y el resultado integrado. Las pruebas automatizadas y revisiones de código no sustituyen un registro pormenorizado de controles físicos.
 - El uso de IA en el laboratorio de origen no está declarado en su README; debe completarlo su autor.

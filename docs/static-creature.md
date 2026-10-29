@@ -5,8 +5,8 @@
 **Qué no es:**
 - **No usa el render del visor** ([`creature-viewer.md`](creature-viewer.md)): `render_view` limpia el cuadro y crea su propia cámara.
 - **No es una ubicación final del nivel.**
-- **No incluye** ojo que siga a la nave, animación, LOD, mipmaps, física ni colisiones. La **revelación por oxígeno** es otra opción aparte (`--creature-reveal`, ver [más abajo](#revelación-por-oxígeno-creature-reveal)); sin ella la criatura siempre es visible.
-- **No sustituye** al Sol ni a ningún planeta.
+- **No incluye** animación, LOD, mipmaps, física ni colisiones. La **revelación por oxígeno** es otra opción aparte (`--creature-reveal`, ver [más abajo](#revelación-por-oxígeno-creature-reveal)); sin ella la criatura siempre es visible. La **mirada del ojo hacia la nave** también es opcional y solo existe con la revelación por etapas (`--creature-eye-follow`, ver [más abajo](#mirada-local-creature-eye-follow)).
+- **No sustituye** al Sol ni a ningún planeta, salvo con `--creature-solar-reveal`, que funde la representación del Sol con la criatura (ver [más abajo](#sol-con-ojo-en-el-juego-creature-solar-reveal)).
 
 **Sin flags,** el juego es idéntico al anterior: misma imagen, mismos contadores, mismo comportamiento y ninguna lectura de archivos externos.
 
@@ -296,9 +296,243 @@ Todos los fixtures son sintéticos.
 - **Ciclo de vida:** caché, fallos que no cambian nada, exclusión con V1, saltos al objetivo con `R`, buffers.
 - **Binario:** validación, fallo cerrado de la ROI con otro modelo, 25 % con 6 objetos, 100 % con 5, y 5 % idéntico a la estática.
 
+## Mirada local (`--creature-eye-follow`)
+
+Opt-in. El ojo de la criatura mira a la **nave** (nunca a la cámara) dentro de sus límites; el cuerpo y los tentáculos no se mueven y la criatura entera nunca gira. La deformación es la de V02 que aprobó Charlie, sin cambios de arte.
+
+```bash
+cargo run --release -- --creature-model ... --creature-texture ... --near-creature --creature-reveal-stages --creature-eye-follow [--debug-oxygen 0.05]
+```
+
+| Flag | Contrato |
+|---|---|
+| `--creature-eye-follow` | Requiere `--creature-reveal-stages` (que a su vez requiere la criatura). **No** activa las etapas por su cuenta. Se rechaza con `--legacy`. Con `--creature-reveal` y `--creature-reveal-stages` juntos gana el error heredado («elige un modo») |
+
+- Las combinaciones se validan antes de leer archivos (`validate_eye_follow_flags`, después de `validate_staged_flags`).
+- La calibración se hace al cargar: **falla cerrada** (código 1, sin PNG) si el modelo no se puede calibrar con la región del ojo de las etapas.
+- No hay teclas nuevas. `1`–`4`, `M`/`N`, `F1`, `F3`–`F6`, `P` y `R` siguen igual.
+
+### Núcleo (`src/visual/creature_eye_follow.rs`)
+
+| Pieza | Contrato |
+|---|---|
+| Límites | Elipse yaw ±10° / pitch ±8° (`EYE_FOLLOW_MAX_YAW`, `EYE_FOLLOW_MAX_PITCH`): las poses aprobadas de V02. La elipse en diagonal es una decisión técnica candidata |
+| Desvanecido | Seguimiento completo hasta 75° entre el eje óptico y la nave, reposo desde 105° y `smoothstep` en medio: de lado o por detrás vuelve al reposo sin saltos |
+| `EyeFollowSettings` | Solo el tiempo hasta el 95 %, en `[0.01, 60]` s. Por defecto 1.5 s: **candidato**, sin aprobación visual |
+| `EyeSkin::calibrate` | Una vez, sobre la pose de reposo: las mismas caras de ojo que `StagedParts::split`, pesos continuos de V02, pivote y eje óptico. Calcula `posed_bounds_radius`, una envolvente válida para cualquier pose |
+| `EyePoseCache` | Solo las caras del ojo, posadas **en sitio** desde el reposo, sin reservar memoria por pose. Ante un error no escribe nada |
+
+### En el mundo (`World`)
+
+| API | Contrato |
+|---|---|
+| `enable_creature_eye_follow(settings)` | Exige el modo por etapas activo (si no, `Err`). Con criatura calibra **ahora**; si falla devuelve `Err` y el mundo queda como estaba. Sin criatura se activa igual (como las etapas) y solo guarda el estado angular. Arranca ya mirando a la nave (sin transición) |
+| `disable_creature_eye_follow()` | Suelta la calibración y la caché. Las etapas vuelven a dibujarse exactamente como sin mirada y el O₂ no cambia |
+| `update_creature_eye_follow(segundos)` | Paso con **tiempo real**, como `update_creature_reveal`: sin el límite del `dt` físico, sin sumar al tiempo orbital y sin que `F5` lo congele. Persigue la posición actual de la nave. Avanza aunque la criatura esté oculta (solo ángulos) |
+| `creature_eye_follow()` | Estado angular (ajustes y ángulos actuales) |
+| QA | `creature_eye_skin()`, `creature_eye_posed()`, `creature_eye_pose_updates()` y `creature_eye_cache_bytes()`: solo lectura, sin HUD |
+
+- **Saltos al objetivo:** al activar, en `set_creature`, `R` (`reset_ship` o `place_near_creature`) y `place_near`, siempre **después** de colocar la nave. Conservan el O₂.
+- **Arranque headless:** salta al objetivo, así que la captura es determinista. Con el asset real y `--near-creature` el ojo ya mira unos (−2.87°, −2.09°) hacia la nave, porque el pivote del ojo no está en el centro de la criatura. Es la consecuencia lógica de mirar a la nave, no otra dirección artística.
+- **Cambios de modo:** la mirada vive **dentro** del modo por etapas.
+  - `enable_creature_reveal` (V1), `disable_staged_creature_reveal` o volver a llamar a `enable_staged_creature_reveal`, aunque sea con la misma región, la apagan. Hay que volver a activarla, así nunca queda una calibración de otra región.
+  - Volver a activarla sustituye los ajustes.
+- **Criatura:**
+  - `set_creature` calibra la nueva criatura **antes** de cambiar nada, junto con la partición. Si falla, la criatura, la partición, la calibración y el estado anteriores siguen intactos.
+  - `clear_creature` suelta la calibración y la caché, pero conserva el estado angular. Sin criatura no se dibuja nada.
+- **Coste:** la calibración (Dijkstra, ajuste de esfera, partición) y la carga se hacen una sola vez. Por cuadro solo se calcula el objetivo, que es un punto transformado.
+
+### Render
+
+La geometría se posa **de forma perezosa al dibujar**, en una caché dentro de un `RefCell`, como el compositor. Solo se posa si los ángulos cambiaron desde la última pose, y nunca con la criatura oculta (ojo en 0) ni descartada por el frustum. Repetir el cuadro no acumula nada.
+
+| Estado | Qué se dibuja |
+|---|---|
+| Sin mirada, o mirada en reposo exacto con `fits_bind_sphere()` | Las rutas de etapas de siempre, **exactas** (píxeles y `RenderStats`) |
+| Ojo y cuerpo en 0 | Nada: igual que sin criatura. No se posa |
+| Ambos en 1 (entera, 5 %) | El ojo posado opaco y el cuerpo de reposo opaco (`StagedParts::body`), **antes** de la nave |
+| Parcial | Después de la nave: el ojo posado con su alfa (también de 50 % a 30 %) y, solo con el ojo en 1 y el cuerpo positivo, el cuerpo de reposo al final, como en las etapas |
+
+- **Una sola partición:** el ojo posado usa las mismas caras que la partición B de las etapas, sin reclasificar vértices posados. Las dos partes usan el transform y la textura (prestada) de la criatura original.
+- **Descarte:** con la mirada posada se usa la envolvente posada en mundo, `posed_bounds_radius · radio_mundo / bounds_radius` (nunca menor que la esfera original), **antes** de posar o transformar nada.
+  - Descartada: cuenta 1 objeto enviado y descartado, y todas sus caras como enviadas y descartadas, con 0 vértices.
+  - Si la envolvente no cabe en la esfera original (`!fits_bind_sphere`), se dibuja por esta ruta incluso en reposo, para no fingir una esfera insuficiente.
+  - Con el asset real la envolvente es igual al radio de reposo (1.120858), así que el descarte no cambia.
+- **Contadores:** **una** criatura lógica. Vértices, triángulos y fragmentos son los reales: el ojo posado y el cuerpo procesan cada uno el arreglo de vértices completo, así que con las dos partes se cuentan dos veces.
+- **Fidelidad:** el padre comparó píxel a píxel la combinación ojo posado + cuerpo de reposo con el modelo completo posado de V02, con el asset real: 18 comparaciones idénticas. Esa prueba dibujaba la criatura después de la nave; el orden real del mundo lo cubren las pruebas de abajo.
+
+### Pruebas (`tests/creature_eye_follow_world.rs`, 14)
+
+Todos los fixtures son sintéticos: una cúpula calibrable (sola, o con un triángulo de cuerpo desplazado para tener bounds descentrados como el asset real) y una textura de 2×2.
+- **Flags:** matriz pura de combinaciones.
+- **Ciclo de vida:** exigir las etapas; activar sin criatura; recalibrar al cambiar de asset; fallos sin cambios (`set_creature` y `enable`); `clear`; cambios de modo; desactivar devuelve las etapas exactas sin tocar el O₂.
+- **Tiempo:** objetivo en la nave y no en la cámara; tiempo real, independiente de `update`, `F5` y el tiempo orbital; saltos al objetivo con `R` y `place_near`.
+- **Render:**
+  - Entera y parcial iguales píxel a píxel y en contadores a una referencia hecha con la API pública.
+  - Reposo idéntico a las etapas.
+  - Envolvente expandida y descarte, también con un caso en que la esfera original descartaría por error.
+  - Pose perezosa: nada oculta ni descartada, una pose por ángulo y la memoria constante.
+  - Z real con la nave visible: entera antes y parcial después. Una mutación temporal confirmó que el test detecta el orden equivocado.
+- **Binario** (siempre `--headless`): rechazos antes de IO con rutas inexistentes, protección de `--output`, modelo que no calibra, arranque ya mirando a la nave al 5 % y el cuadro oculto idéntico al de las etapas sin mirada.
+
+### Comparación nave/cámara (`--creature-eye-compare`)
+
+Prueba A/B opt-in, **no** promoción: solo cambia el punto al que mira el ojo, para aislar el objetivo. Los límites (10°/8°), el desvanecido (75°→105°), el tiempo (1.5 s), los pesos y la geometría son los mismos. La criatura entera nunca gira.
+
+```bash
+cargo run --release -- --creature-model ... --creature-texture ... --near-creature --creature-reveal-stages --creature-eye-follow --creature-eye-compare
+```
+
+| Pieza | Contrato |
+|---|---|
+| `--creature-eye-compare` | Requiere `--creature-eye-follow` (y por la validación previa, las etapas y la criatura; no V1). Se rechaza con `--legacy`. Se valida antes de leer archivos, después de los flags anteriores, cuyos errores se conservan. Sin el flag, todas las rutas, mensajes y PNG son los de antes |
+| `EyeTarget::{Ship, Camera}` (`src/visual/creature_eye_comparison.rs`) | `Ship` por defecto. `Camera` es la **posición** de la cámara de persecución, nunca el punto al que mira |
+| `World::set_creature_eye_target(t)` | Solo cambia la elección: no recalibra, no toca la caché ni la pose y no salta los ángulos; `update_creature_eye_follow` llega al nuevo objetivo con la transición de siempre. Sin mirada, `Err` sin efectos |
+| `World::enable_creature_eye_follow_targeting(s, t)` | Como `enable_creature_eye_follow` (que equivale a `t = Ship`), con salto inicial al objetivo elegido |
+| `creature_eye_target()`, `creature_eye_goal()`, `creature_eye_comparison_status()` | Elección, objetivo angular actual y lo que muestra el panel (QA/HUD) |
+| `app::run_game_with_eye_comparison(options)` | Ruta opt-in. Valida antes de cualquier IO; `run_game` no cambia |
+
+- **Ciclo de vida:**
+  - `clear_creature` y `set_creature` conservan la elección.
+  - `R`, `place_near` y `place_near_creature` la conservan y saltan al objetivo elegido **después** de recolocar la nave y la cámara.
+  - Apagar y volver a activar la mirada vuelve a `Ship`. Cambiar de modo de revelación la apaga como antes.
+- **Ventana:** arranca mirando a la cámara. `G` (sin repetición) alterna NAVE/CÁMARA en vuelo; el tiempo, la transición, la caché y el O₂ siguen igual. Las demás teclas no cambian.
+- **Panel inferior** (abajo a la izquierda, separado de la banda superior del overlay, que no cambia):
+  - Se dibuja con `draw_text` y `darken_rect` existentes, también en headless y con `F1` apagado, solo en la comparación.
+  - Usa la misma escala que el overlay: 1 bajo 1000 px de ancho y 2 desde ahí. Las constantes 5×7 de la fuente se replican porque son privadas de `overlay.rs`.
+  - Muestra el objetivo (`MIRADA A: CAMARA   G CAMBIA A NAVE`), los ángulos actuales, el objetivo angular, el estado y el ángulo al eje:
+    - `DENTRO`: dentro de la elipse.
+    - `TOPE`: en el borde de la elipse 10/8.
+    - `DESVANECE`: entre 75° y 105° del eje.
+    - `REPOSO`: desde 105°.
+    - `SIN DIRECCION`: sin dirección al objetivo.
+  - El texto lo calcula el helper puro `eye_comparison_lines`.
+- **Lo que no promete:**
+  - Arriba y abajo, el pitch satura en 8° desde unos 10° de elevación y se desvanece de 75° a 105°, apunte a la nave o a la cámara. Elegir la cámara no quita esos topes.
+  - La cámara va 22 detrás y 6 arriba de la nave: en una trayectoria de prueba de 90 cuadros la diferencia entre ambos objetivos fue de 2.26° como máximo.
+
+Pruebas (`tests/creature_eye_comparison.rs`, 11, fixtures sintéticos):
+- **Elección:** identidad del objetivo con la nave y la cámara en sitios distintos, sin pose nueva ni cambios de caché al alternar.
+- **Ciclo de vida:** `clear`/`set`, `R`/`near` y vuelta al default.
+- **Diagnóstico puro:** ángulo al eje y estado consistentes con `aim_gaze`, con los datos arriba/abajo.
+- **Panel:** en 320×180, 640×360 y 1280×720; solo toca su rectángulo.
+- **CLI:** validación antes de IO y protección de `--output`; arranque mirando a la cámara y panel en headless, también con `--overlay`.
+- **Trayectoria real:** controles → física → cámara → mirada → render, con los dos defaults exactos.
+
+### Giro global lejano (`--creature-distant-turn`, candidata)
+
+Experimento opt-in en una **candidata aislada**, no la integración principal ni el default final. De lejos el ojo no se distingue, así que la criatura entera gira, lenta y limitada, hacia el punto elegido con `G`. De cerca se queda quieta y solo mira el ojo, con la mirada aprobada. Los parámetros son **técnicos candidatos**, sin aprobación artística. La geometría V02, el iris, las UV, la textura y los pesos no cambian.
+
+```bash
+cargo run --release -- --creature-model ... --creature-texture ... --creature-reveal-stages --creature-eye-follow --creature-eye-compare --creature-distant-turn
+```
+
+| Pieza | Contrato |
+|---|---|
+| `--creature-distant-turn` | Requiere `--creature-eye-compare`, y por las validaciones previas la mirada, las etapas y la criatura (no V1). Se rechaza con `--legacy`. Se valida antes de leer archivos y después de los flags anteriores, cuyos errores se conservan; mantiene la protección de alias de `--output`. Sin el flag, todo es como antes |
+| `app::run_game_with_distant_turn(options)` | Entrada de biblioteca con los mismos guards que la comparación, antes de cualquier IO. `GameOptions`, `run_game` y `run_game_with_eye_comparison` no cambian |
+| `TurnAngles` (`src/visual/creature_distant_turn.rs`) | Yaw máx. 20° y pitch máx. 12°, con envolvente **elíptica**. Convención: yaw positivo lleva el frente (+Z del OBJ) hacia +X del OBJ; **pitch positivo, hacia arriba** |
+| `aim_turn(centro, yaw, objetivo)` | Pedido desde el **centro fijo** en el marco de **reposo** (no se realimenta). Usa un mapa ángulo-dirección como `aim_gaze`, continuo, sin el salto ±180° de un Euler con `atan2`. Se recorta a la elipse y se multiplica por el **desvanecido 75°→105°** del ojo (reutiliza las constantes; `creature_eye_follow` no cambia): nunca da la vuelta hacia algo que está detrás |
+| `distance_weight(d)` | `d` = distancia de la **cámara** al centro en radios. Peso 0 hasta 3, 1 desde 7 y smoothstep en medio; no finito da 0 |
+| `DistantTurn` | Encendido/apagado (`H`) y ángulos actuales. Persecución exponencial con **t95 = 8 s** reales (el ojo, 1.5 s), independiente del troceo; avanza con el tiempo real y `F5` no lo congela. Apagado, el objetivo es el reposo y vuelve con la misma transición (sin salto) |
+| `turned_euler` / `turned_transform` | `R = Ry(yaw_criatura + yaw) · Rx(−pitch)`, Euler `(−pitch, yaw_criatura + yaw, 0)`, sin alabeo. La traslación deja el **centro envolvente del OBJ** en `placement.center()`, con bounds descentrados y `yaw` de colocación ≠ 0. Misma escala; normales rígidas por `Transform`. En reposo devuelve el transform original **exacto** |
+| `world_turn` / `world_turn_inverse` / `rest_frame_target` | Giro en mundo `G = Ry(py+yaw)·Rx(−pitch)·Ry(−py)` alrededor del centro y su inversa **analítica** (mismos factores invertidos). El ojo apunta con su calibración de reposo a `centro + G⁻¹(objetivo − centro)`: no se suman dos miradas ni cambia `creature_eye_follow`. En reposo, el objetivo exacto |
+| `CreaturePreset::{Near, Far}`, `preset_pose` | `Near` = `spawn_pose` (2.5 radios, de frente). `Far` = 8 radios y 25° laterales hacia +X del frente, mirando al centro y sin elevación |
+| `World::enable/disable_creature_distant_turn`, `set_creature_distant_turn_active`, `creature_distant_turn(_status)`, `place_creature_preset` | Exige la mirada (`Err` sin efectos). Desaparece con la mirada (apagarla, reiniciar o cambiar el modo de revelación). `clear`/`set` de la criatura conservan los ángulos y el ojo salta al punto compensado. Los presets dejan el giro en reposo exacto y saltan el ojo contra la cámara ya colocada, conservando O₂, `G` y `H` |
+
+- **Orden por cuadro:** física y cámara (`update`) → `update_creature_eye_follow(elapsed)`, que avanza primero el giro hacia el mismo punto de `G` (posición de la nave o de la **cámara**, nunca `camera.target`) y después el ojo hacia el objetivo compensado.
+- **Render:**
+  - Con el giro fuera del reposo, ojo **y** cuerpo usan el **mismo** transform girado, también con el ojo en reposo; nunca se cae a `StaticCreature::render`, que lo ignoraría.
+  - El descarte usa la esfera de siempre centrada en `placement.center()` (la completa o la envolvente posada del ojo), antes de posar; la rotación rígida no la agranda.
+  - Oculta por O₂ o fuera del frustum, no posa.
+  - Opaca antes de la nave; parcial al final del 3D con el compositor actual.
+  - En reposo, las rutas de siempre exactas.
+  - No copia ni toca vértices, normales, UV ni caras, y no recarga modelo, textura ni skin.
+- **Ventana:** arranca en el preset **LEJOS**, aunque se pida `--near-creature`.
+  - `H` alterna GIRO GLOBAL ON/OFF (apagado vuelve suave al reposo y el panel lo avisa).
+  - `7` coloca CERCA, `8` coloca LEJOS y `R` repite el último preset.
+  - `G` alterna NAVE/CÁMARA. Las demás teclas no cambian.
+- **Panel:**
+  - El de la comparación sigue abajo a la izquierda; su objetivo, su estado TOPE/fade y el eje van en el **marco compensado**.
+  - El del giro va abajo a la derecha, o encima del otro si no caben: `H`, presets, distancia y peso, giro actual y objetivo, y estado del pedido (DENTRO/TOPE/DESVANECE/REPOSO) con su ángulo al frente.
+- **Lo que no promete:**
+  - Al acercarse tras girar lejos, el cuerpo **vuelve visiblemente** (t95 8 s), no se congela al instante.
+  - De lejos el giro es sutil a 640×360 (la criatura ocupa ~60 px a 8 radios).
+
+Pruebas (`tests/creature_distant_turn.rs`, 24 + 1 `#[ignore]` con el asset real por variables de entorno):
+- Núcleo puro y estado temporal.
+- Transform rígido con `yaw` ≠ 0 y bounds descentrados, con su inversa.
+- Ciclo de vida y presets.
+- Avance y compensación; cerca, la mirada sale bit a bit igual.
+- Rutas de render: reposo exacto, ojo en reposo con giro, descarte y O₂.
+- Paneles, CLI y biblioteca.
+- Replay pilotado lejos→cerca→lejos y alternancia de presets.
+
+Preview: `examples/creature_distant_turn_preview.rs` (mundo real, matriz declarada en su encabezado).
+
+### Seguimiento corporal horizontal (`--creature-horizontal-follow`, candidata 02)
+
+> **Estado actual:** aprobado en vivo por Charlie y congelado (t95 4 s, tope 18°/s). La ruta del [Sol con ojo](#sol-con-ojo-en-el-juego-creature-solar-reveal) lo usa sin cambios. El texto de esta sección es el de la candidata.
+
+Experimento opt-in en una **candidata aislada** (no es la integración principal, la colocación en el Sol ni el default final). Cerca y lejos, la criatura entera gira **solo en horizontal** (alrededor de +Y del mundo, sobre su centro fijo) hacia el punto elegido con `G`, en **todo el azimut**, lenta y con rapidez limitada. Sustituye, como opción separada, al giro global de la candidata 01 (que se conserva intacto y no se apila con este). El ojo aprobado conserva su deformación, límites 10/8 y desvanecido.
+
+```bash
+cargo run --release -- --creature-model ... --creature-texture ... --creature-reveal-stages --creature-eye-follow --creature-eye-compare --creature-horizontal-follow
+```
+
+| Pieza | Contrato |
+|---|---|
+| `--creature-horizontal-follow` | Requiere `--creature-eye-compare` (y por las validaciones previas, la mirada, las etapas y la criatura; no V1). Rechazado con `--legacy` y con `--creature-distant-turn`. Se valida antes de leer o escribir archivos, con la protección de alias de `--output`. Sin el flag, todo es como antes |
+| `app::run_game_with_horizontal_follow(options)` | Entrada de biblioteca con los guards de la comparación, antes de cualquier IO. `GameOptions` y las entradas anteriores no cambian |
+| `target_azimuth(centro, yaw, objetivo)` | Azimut en `(-π, π]` de la **proyección XZ** del objetivo vista desde el centro, en el marco de reposo (0 = frente +Z del OBJ, positivo hacia +X del OBJ). La altura no cuenta. `None` sin dirección XZ (sobre/bajo el centro, coincidente) o no finito |
+| `HorizontalFollow` | Giro actual en `(-π, π]` (acotado tras cualquier número de vueltas), último objetivo válido, sentido del último giro y rapidez real. Ley `|e|' = −min(k·|e|, vmax)` por el **arco corto**, con `k = ln 20 / t95`: candidata **t95 = 4 s, vmax = 18°/s**. Solución exacta con el objetivo fijo (independiente del troceo, sin pasarse, rapidez ≤ vmax). Segundos **reales** (`F5` no lo congela) |
+| Casos límite | Empate antipodal exacto: el sentido del último giro (positivo al principio). Objetivo sin dirección XZ: conserva el último objetivo válido (nunca vuelve al frente por eso). `elapsed` inválido no avanza |
+| `H` | ON persigue el último objetivo; OFF lleva el objetivo efectivo al **frente de reposo** con la misma dinámica (no es una pausa) y el panel lo dice. Nunca salta |
+| `horizontal_transform(criatura, yaw)` | Exactamente el transform de una colocación con yaw `placement.yaw() + yaw` en el mismo centro (misma fórmula que `transform_for`): Euler `(0, yaw total, 0)`, misma escala, centro envolvente del OBJ fijo. Ojo y cuerpo usan el **mismo** transform. Con 0, el original exacto |
+| `rest_frame_point(centro, yaw, p)` | `centro + Ry(−yaw)(p − centro)`: el ojo apunta con su calibración de reposo a ese punto (inversa analítica, sin doble giro ni cambio del skin) |
+| `World::enable/disable_creature_horizontal_follow`, `set_creature_horizontal_follow_active`, `creature_horizontal_follow(_status)`, `creature_render_transform` | Exige la mirada; excluyente con el giro global de la 01 en los dos sentidos (`Err` sin efectos). Muere con la mirada. `clear`/`set` conservan el giro. `place_creature_preset` lo deja de frente exacto y sin objetivo previo |
+
+- **Orden por cuadro:** física y cámara (`update`) → `update_creature_eye_follow(elapsed)`, que avanza primero el cuerpo hacia la proyección XZ del punto de `G` (posición de la nave o de la **cámara**, nunca `camera.target`) y después el ojo hacia el punto compensado. Sin peso por distancia: sigue cerca y lejos.
+- **Render:** rutas de la 01 con el transform horizontal: descarte con la esfera de siempre (la rotación rígida no la agranda) antes de posar; ojo y cuerpo girados también con el ojo en reposo; opaca antes de la nave, parcial al final; oculta por O₂ no posa. En reposo (giro 0), rutas antiguas exactas.
+- **Ventana:** arranca en el preset LEJOS mirando a la cámara (también con `--near-creature`); el log de la mirada sale **después** del preset. `H` ON/OFF, `7` CERCA, `8` LEJOS, `R` repite el último preset (conserva O₂, `G` y `H`). Panel derecho con regla y rapidez reales (sin los 20/12 ni el fade de la 01).
+- **Lo que no promete:** retraso estable al rodearla (≈ `ω·t95/ln 20`): unos 7° a 8 radios y 20° a 2.8 radios a crucero; a más de 18°/s (impulso cerca) el cuerpo se queda atrás y, si el retraso pasara de 180°, el arco corto invertiría el sentido. Sin giro vertical.
+
+Pruebas (`tests/creature_horizontal_follow.rs`, 22 + 1 `#[ignore]` con el asset real por variables de entorno). Preview: `examples/creature_horizontal_follow_preview.rs` (mundo real, matriz declarada en su encabezado).
+
+## Sol con ojo en el juego (`--creature-solar-reveal`)
+
+**Estado:** la composición del preview 03 está **aprobada visualmente por Charlie** («Yo creo que está re bien, tamaño, posición, todo, me gusta») e integrada en el bucle principal como opción explícita, conservando la composición y la vuelta atrás. La aprobación es de la composición, no del vuelo ni de los controles con teclas físicas, que quedan para la prueba manual de Charlie. El lanzador solar local utiliza esta entrada del proyecto principal con assets externos; los lanzadores anteriores se conservan. Sin assets ni el flag, el arranque genérico no cambia.
+
+```bash
+cargo run --release -- --creature-model ruta/modelo.obj --creature-texture ruta/textura.png --creature-solar-reveal
+```
+
+| Pieza | Contrato |
+|---|---|
+| `--creature-solar-reveal` | Requiere el modelo y la textura **externos**, por CLI: la fuente no declara rutas privadas ni incluye assets. Implica las etapas, la mirada (a la cámara), la comparación (`G`) y el seguimiento horizontal 02; esos flags pueden repetirse sin efecto. **Rechaza antes de leer o escribir archivos:** `--legacy`, `--creature-reveal` (V1), `--near N`, `--near-creature`, `--creature-distant-turn`, y un `--output` que no sea `.png` o que resuelva a una entrada |
+| `app::run_game_with_solar_reveal(options)` | Entrada de biblioteca con los mismos guards, antes de cualquier IO. `GameOptions` no cambia (sus literales siguen compilando); `creature_reveal_stages` y `creature_eye_follow` se ignoran porque van implícitos. `run_game` y las entradas `run_game_with_*` anteriores no cambian |
+| `visual::solar_game` | Envoltorio **sin algoritmos nuevos** sobre las APIs aceptadas de `World`. `solar_creature_placement`: centro del Sol, radio 80, yaw 0. `SolarGame::start`: la receta del preview en su orden (criatura, etapas, mirada a la CÁMARA, seguimiento 02, `enable_solar_reveal_preview(Camera)` y vista FRONTAL). `SolarGame::render`: siempre `World::render_solar_reveal_preview`. `SolarGame::apply`: las teclas. `SolarGame::title`: el título |
+| `app::advance_frame(world, input, elapsed)` | El orden por cuadro de **todos** los modos, sin cambios: `update` con `dt ≤ 0.1` (`MAX_PHYSICS_DT`) y después la revelación y la mirada con los segundos reales. La ventana y las pruebas usan la misma función |
+
+- **Composición:** idéntica a la aprobada. La misma criatura en el centro del Sol, radio 80 y yaw 0; las etapas 50/30/25/5, con el cuerpo a 0.02 al 25 %; el ojo V02; el seguimiento horizontal 02 (t95 4 s, 18°/s); el mismo `SolarPairCompositor` y la luz local de cámara. No cambian assets, UV, normales, shaders, renderer, matemáticas, nave, cámara, carga ni el código de `World` o del compositor.
+- **Arranque:** vista FRONTAL (`place_solar_reveal_camera(0, 298, 0)`), mirada a la cámara y O₂ de depuración al 100 % por defecto (`--debug-oxygen` lo cambia). Una sola carga, una partición y una calibración.
+- **Arranque frente a asentado:** no se congelan las órbitas ni se simulan los 20 s del preview. En la vista frontal el cuadro de arranque **ya es** el asentado; lo comprueban `tests/solar_game.rs` y los 8 PNG frontales aprobados. En la vista oblicua, el cuerpo y el ojo llegan con su dinámica, en segundos reales.
+- **Teclas:** `7` FRONTAL, `8` OBLICUA (70°, 578, 60) y `R` vuelve a FRONTAL.
+  - Las vistas saltan la revelación y la mirada al objetivo, como el preview, pero **no** el cuerpo: el seguimiento conserva su giro y lo continúa.
+  - `H` enciende o apaga el seguimiento (apagado vuelve al frente con su dinámica) y `G` alterna CÁMARA/NAVE.
+  - Todas conservan el O₂, el reloj orbital y las elecciones.
+  - `1`–`4`, `M`/`N`, `P`, `F1`/`F3`/`F4`/`F5`/`F6` y el vuelo funcionan como siempre. `F5` solo congela las órbitas: la revelación, la mirada y el seguimiento siguen.
+- **Tiempo y Sol:** las órbitas siguen vivas. El Sol no tiene órbita, así que la criatura sigue anclada a su centro, y su giro axial nunca arrastra a la criatura: el transform de la criatura solo depende del seguimiento.
+- **Cuadro:** el inicial, el headless y cada cuadro del bucle pasan por `SolarGame::render`, nunca por `World::render` por accidente. Con el ojo oculto (O₂ ≥ 50 %) el resultado es exactamente `World::render`, por contrato.
+- **Sin HUD por defecto:** el estado (O₂, `G`, `H` y vista) va en el título de la ventana. `F1` y `--overlay` siguen disponibles; no hay panel de comparación.
+- **Sin el flag,** todo queda exacto: el modo sin assets, `--legacy` y las rutas anteriores, con sus controles.
+
+Pruebas: `tests/solar_game.rs` tiene 15 pruebas y 2 `#[ignore]` con el asset real y los PNG aprobados, por variables de entorno (`UMBRAL_REAL_CREATURE_OBJ`, `UMBRAL_REAL_CREATURE_TEXTURE` y `UMBRAL_SOLAR_PREVIEW03_DIR`).
+
 ## Pendiente
 
 - **Inspección visual y prueba manual de Charlie** en ventana (controles, `R` con `--near-creature`, legibilidad, y la revelación con las teclas `1`–`4`).
 - **Decisiones de rendimiento** (LOD, mipmaps, malla reducida, ocultar detrás del Sol) y la **ubicación final** en el nivel.
-- **Ojo que sigue a la nave, animación e integración con la textura o el material de Persona 1.** Integración de la revelación con el oxígeno real de UMB-205 y con `LucidSettings` (UMB-310).
+- **Prueba nativa de la mirada** (ventana y controles físicos) y aprobación del tiempo candidato de 1.5 s. Animación e integración con la textura o el material de Persona 1. Integración de la revelación con el oxígeno real de UMB-205 y con `LucidSettings` (UMB-310).
+- **Sol con ojo:** la prueba manual de Charlie en ventana (teclas físicas, vuelo y lectura en vivo). La composición aprobada ya está integrada y tiene un lanzador solar local; no se añade consumo automático de oxígeno ni colisiones.
 - **Origen del modelo:** es externo, generado con Meshy AI. Su uso y su declaración dependen de la rúbrica y de los términos de Meshy, que no se han verificado aquí.

@@ -9,8 +9,28 @@ use crate::{
         world::{SPACE_COLOR, World},
     },
     visual::{
+        creature_distant_turn::{
+            CreaturePreset, DISTANT_TURN_FAR_RADII, DISTANT_TURN_MAX_PITCH, DISTANT_TURN_MAX_YAW,
+            DISTANT_TURN_NEAR_RADII, DISTANT_TURN_T95_SECONDS, FAR_PRESET_LATERAL,
+            FAR_PRESET_RADII, distant_turn_lines, draw_distant_turn_panel,
+        },
+        creature_eye_comparison::{
+            EyeTarget, draw_eye_comparison_panel, eye_comparison_lines, eye_comparison_panel,
+            validate_eye_compare_flags,
+        },
+        creature_eye_follow::{EyeFollowSettings, GazeAngles, validate_eye_follow_flags},
+        creature_horizontal_follow::{
+            HORIZONTAL_FOLLOW_MAX_SPEED, HORIZONTAL_FOLLOW_T95_SECONDS, horizontal_follow_lines,
+        },
         creature_reveal::{RevealSettings, step_debug_oxygen},
-        staged_creature_reveal::{CREATURE_EYE_REGION, StagedRevealSettings},
+        creature_viewer::validate_output_path,
+        solar_game::{
+            SolarGame, SolarKeys, SolarRevealRequest, solar_creature_placement,
+            validate_solar_reveal_flags,
+        },
+        staged_creature_reveal::{
+            CREATURE_EYE_REGION, StagedRevealSettings, validate_staged_flags,
+        },
         static_creature::{CreatureOptions, CreaturePlacement, StaticCreature},
     },
 };
@@ -37,6 +57,8 @@ pub struct GameOptions {
     /// Revelacion por etapas (`--creature-reveal-stages`, requiere la criatura; excluyente
     /// con `creature_reveal`).
     pub creature_reveal_stages: bool,
+    /// Mirada local hacia la nave (`--creature-eye-follow`, requiere `creature_reveal_stages`).
+    pub creature_eye_follow: bool,
     /// Oxigeno de depuracion inicial en `[0, 1]` (`--debug-oxygen`, por defecto 1).
     pub debug_oxygen: f64,
 }
@@ -79,7 +101,148 @@ fn describe(stats: &RenderStats) -> String {
     )
 }
 
+/// Juego normal: sin la comparacion de la mirada.
 pub fn run_game(options: GameOptions) -> Result<(), String> {
+    run(options, false, false, false, false)
+}
+
+/// Juego con la comparacion A/B de la mirada (`--creature-eye-compare`): arranca mirando a la
+/// camara, `G` alterna nave/camara y un panel inferior muestra el estado (tambien headless).
+/// Valida antes de cualquier IO que la mirada (y por tanto etapas y criatura) este pedida.
+pub fn run_game_with_eye_comparison(options: GameOptions) -> Result<(), String> {
+    validate_comparison_options(&options)?;
+    run(options, true, false, false, false)
+}
+
+/// Candidata del giro global lejano (`--creature-distant-turn`, que exige la comparacion): la
+/// comparacion entera mas el giro, arrancando en el preset `LEJOS`; `H` enciende/apaga el
+/// giro, `7`/`8` colocan los presets CERCA/LEJOS y `R` repite el ultimo. Valida antes de
+/// cualquier IO con los mismos guards que la comparacion.
+pub fn run_game_with_distant_turn(options: GameOptions) -> Result<(), String> {
+    validate_comparison_options(&options)?;
+    run(options, true, true, false, false)
+}
+
+/// Candidata 02 del seguimiento corporal horizontal (`--creature-horizontal-follow`, que exige la
+/// comparacion y no se apila con el giro global de la 01): la comparacion entera mas el
+/// seguimiento, arrancando en el preset `LEJOS`; `H` enciende/apaga (apagado vuelve al frente),
+/// `7`/`8` colocan CERCA/LEJOS y `R` repite el ultimo. Valida antes de cualquier IO con los mismos
+/// guards que la comparacion.
+pub fn run_game_with_horizontal_follow(options: GameOptions) -> Result<(), String> {
+    validate_comparison_options(&options)?;
+    run(options, true, false, true, false)
+}
+
+/// Sol con ojo (`--creature-solar-reveal`): la composicion aprobada del preview 03 en el juego
+/// real (`visual::solar_game`). Las etapas, la mirada, la comparacion y el seguimiento 02 van
+/// implicitos (`creature_reveal_stages`/`creature_eye_follow` se ignoran). Valida antes de
+/// cualquier IO con los mismos guards que la linea de comandos: criatura sin `near`, sin V1 ni
+/// `--near`, y alias de `--output`. Sin panel por defecto: el estado va en el titulo.
+pub fn run_game_with_solar_reveal(options: GameOptions) -> Result<(), String> {
+    validate_solar_reveal_flags(
+        true,
+        SolarRevealRequest {
+            has_creature: options.creature.is_some(),
+            near_body: options.near.is_some(),
+            near_creature: options.creature.as_ref().is_some_and(|c| c.near),
+            uniform_reveal: options.creature_reveal,
+            ..SolarRevealRequest::default()
+        },
+    )?;
+    if let Some(creature) = &options.creature {
+        validate_output_path(&options.output, &[&creature.model, &creature.texture])?;
+    }
+    run(options, false, false, false, true)
+}
+
+/// Limite de `dt` de la fisica: evita saltos enormes tras arrastrar la ventana o pausar.
+pub const MAX_PHYSICS_DT: f64 = 0.1;
+
+/// Un cuadro del juego (todos los modos), en el orden de siempre: fisica y camara con el `dt`
+/// limitado; despues la revelacion y la mirada (con el seguimiento o el giro antes del ojo) con
+/// los segundos **reales**, sin el limite y sin que `F5` los congele.
+pub fn advance_frame(world: &mut World, input: &ShipInput, elapsed: f64) {
+    world.update(input, elapsed.min(MAX_PHYSICS_DT));
+    world.update_creature_reveal(elapsed);
+    world.update_creature_eye_follow(elapsed);
+}
+
+/// Guards de la comparacion (y de la candidata), sin tocar archivos: mirada, etapas, criatura,
+/// modos de revelacion y alias de `--output`.
+fn validate_comparison_options(options: &GameOptions) -> Result<(), String> {
+    validate_eye_compare_flags(true, options.creature_eye_follow, false)?;
+    validate_eye_follow_flags(
+        options.creature_eye_follow,
+        options.creature_reveal_stages,
+        options.creature.is_some(),
+        false,
+    )?;
+    validate_staged_flags(
+        options.creature_reveal_stages,
+        options.creature.is_some(),
+        options.creature_reveal,
+        false,
+    )?;
+    if let Some(creature) = &options.creature {
+        validate_output_path(&options.output, &[&creature.model, &creature.texture])?;
+    }
+    Ok(())
+}
+
+/// Panel de la comparacion sobre el cuadro ya dibujado (y el overlay, si lo hay).
+fn draw_comparison(framebuffer: &mut Framebuffer, world: &World) {
+    if let Some(status) = world.creature_eye_comparison_status() {
+        draw_eye_comparison_panel(framebuffer, &eye_comparison_lines(&status));
+    }
+}
+
+/// Panel del giro global (candidata), junto al de la comparacion.
+fn draw_distant_turn(framebuffer: &mut Framebuffer, world: &World, last_preset: CreaturePreset) {
+    let (Some(eye), Some(turn)) = (
+        world.creature_eye_comparison_status(),
+        world.creature_distant_turn_status(),
+    ) else {
+        return;
+    };
+    let left = eye_comparison_panel(
+        framebuffer.width,
+        framebuffer.height,
+        &eye_comparison_lines(&eye),
+    );
+    draw_distant_turn_panel(framebuffer, &distant_turn_lines(&turn, last_preset), &left);
+}
+
+/// Panel del seguimiento horizontal (candidata 02), con el layout generico de la 01.
+fn draw_horizontal_follow(
+    framebuffer: &mut Framebuffer,
+    world: &World,
+    last_preset: CreaturePreset,
+) {
+    let (Some(eye), Some(follow)) = (
+        world.creature_eye_comparison_status(),
+        world.creature_horizontal_follow_status(),
+    ) else {
+        return;
+    };
+    let left = eye_comparison_panel(
+        framebuffer.width,
+        framebuffer.height,
+        &eye_comparison_lines(&eye),
+    );
+    draw_distant_turn_panel(
+        framebuffer,
+        &horizontal_follow_lines(&follow, last_preset),
+        &left,
+    );
+}
+
+fn run(
+    options: GameOptions,
+    comparison: bool,
+    distant_turn: bool,
+    horizontal: bool,
+    solar: bool,
+) -> Result<(), String> {
     let (width, height) = (options.width, options.height);
     let ship_model = load_model(&ship_model_path())?;
     println!(
@@ -103,17 +266,19 @@ pub fn run_game(options: GameOptions) -> Result<(), String> {
         world.place_near(index, 25.0)?;
     }
     let near_creature = options.creature.as_ref().is_some_and(|c| c.near);
+    let mut solar_game = None;
     if let Some(requested) = &options.creature {
         // Se carga una sola vez; el mundo toma posesion del modelo y la textura.
         let start = Instant::now();
-        let creature = StaticCreature::load(
-            &requested.model,
-            &requested.texture,
-            CreaturePlacement::demo(),
-        )?;
+        let (placement, place_name) = if solar {
+            (solar_creature_placement(&world)?, "centro del Sol")
+        } else {
+            (CreaturePlacement::demo(), "ubicacion de demostracion")
+        };
+        let creature = StaticCreature::load(&requested.model, &requested.texture, placement)?;
         let (placement, texture) = (creature.placement(), creature.texture());
         println!(
-            "Criatura: {} vertices, {} triangulos, textura {}x{} | carga {:.0} ms | centro ({}, {}, {}) radio {} (ubicacion de demostracion)",
+            "Criatura: {} vertices, {} triangulos, textura {}x{} | carga {:.0} ms | centro ({}, {}, {}) radio {} ({place_name})",
             creature.model().vertices.len(),
             creature.model().faces.len(),
             texture.width(),
@@ -124,7 +289,25 @@ pub fn run_game(options: GameOptions) -> Result<(), String> {
             placement.center().z,
             placement.world_radius()
         );
-        world.set_creature(creature)?;
+        if solar {
+            // Composicion aprobada del preview 03: arranque completo con las APIs aceptadas.
+            let game = SolarGame::start(&mut world, creature)?;
+            let alphas = world.solar_reveal_alphas().ok_or("sin preview solar")?;
+            let (eye_faces, body_faces) = world
+                .staged_creature_parts()
+                .map_or((0, 0), |p| (p.eye_faces(), p.body_faces()));
+            println!(
+                "Sol con ojo (composicion aprobada 03): criatura en el centro del Sol | vista FRONTAL | O2 {:.2}: sol {:.2} ojo {:.2} cuerpo {:.3} | caras ojo {eye_faces} cuerpo {body_faces} | mirada a la CAMARA, seguimiento horizontal 02, luz de camara | {}",
+                world.debug_oxygen01,
+                alphas.sun,
+                alphas.eye,
+                alphas.body,
+                game.title(&world)
+            );
+            solar_game = Some(game);
+        } else {
+            world.set_creature(creature)?;
+        }
         if near_creature {
             world.place_near_creature()?;
         }
@@ -138,7 +321,7 @@ pub fn run_game(options: GameOptions) -> Result<(), String> {
                 shown * 100.0
             );
         }
-        if options.creature_reveal_stages {
+        if options.creature_reveal_stages && !solar {
             // Particion una vez al activar; tambien arranca ya en el objetivo del O2 inicial.
             world.enable_staged_creature_reveal(
                 StagedRevealSettings::default(),
@@ -157,8 +340,86 @@ pub fn run_game(options: GameOptions) -> Result<(), String> {
                 body * 100.0
             );
         }
+        if options.creature_eye_follow && !solar {
+            // Calibracion una vez al activar; arranca ya mirando a la nave (headless determinista).
+            // La comparacion arranca en la camara (ya colocada), tambien con salto determinista.
+            let settings = EyeFollowSettings::default();
+            let (target, name) = if comparison {
+                (EyeTarget::Camera, "camara")
+            } else {
+                (EyeTarget::Ship, "nave")
+            };
+            world.enable_creature_eye_follow_targeting(settings, target)?;
+            let gaze = world
+                .creature_eye_follow()
+                .map_or(GazeAngles::NEUTRAL, |f| f.current());
+            // La candidata 02 lo imprime despues de su preset (este quedaria obsoleto).
+            if !horizontal {
+                println!(
+                    "Mirada: yaw {:+.3} grados, pitch {:+.3} grados hacia la {name} | t95 {} s (candidato)",
+                    gaze.yaw().to_degrees(),
+                    gaze.pitch().to_degrees(),
+                    settings.t95_seconds()
+                );
+            }
+            if comparison {
+                println!(
+                    "Comparacion de la mirada: G alterna NAVE/CAMARA (prueba, no cambia limites ni tiempo)"
+                );
+            }
+        }
+        if distant_turn {
+            // Candidata: arranca en el preset LEJOS (aunque se pida --near-creature), con el giro
+            // en reposo y el ojo ya mirando al punto elegido desde la camara colocada.
+            world.enable_creature_distant_turn()?;
+            world.place_creature_preset(CreaturePreset::Far)?;
+            println!(
+                "Giro global (candidata): arranque LEJOS {} radios a {:.0} grados | max {:.0}/{:.0} grados | t95 {} s | peso 0 hasta {} radios, 1 desde {} | H/7/8/R",
+                FAR_PRESET_RADII,
+                FAR_PRESET_LATERAL.to_degrees(),
+                DISTANT_TURN_MAX_YAW.to_degrees(),
+                DISTANT_TURN_MAX_PITCH.to_degrees(),
+                DISTANT_TURN_T95_SECONDS,
+                DISTANT_TURN_NEAR_RADII,
+                DISTANT_TURN_FAR_RADII
+            );
+        }
+        if horizontal {
+            // Candidata 02: arranca en el preset LEJOS (aunque se pida --near-creature), con el
+            // cuerpo de frente; los diagnosticos salen despues del preset efectivo.
+            world.enable_creature_horizontal_follow()?;
+            world.place_creature_preset(CreaturePreset::Far)?;
+            let status = world.creature_horizontal_follow_status();
+            println!(
+                "Seguimiento horizontal (candidata 02): arranque LEJOS {} radios a {:.0} grados | cuerpo yaw {:+.1}, objetivo {} grados (camara) | t95 {} s, tope {:.0} grados/s, solo yaw, cerca y lejos | H/7/8/R",
+                FAR_PRESET_RADII,
+                FAR_PRESET_LATERAL.to_degrees(),
+                status.map_or(0.0, |s| s.follow.yaw().to_degrees()),
+                status
+                    .and_then(|s| s.target_azimuth)
+                    .map_or("--".to_string(), |a| format!("{:+.1}", a.to_degrees())),
+                HORIZONTAL_FOLLOW_T95_SECONDS,
+                HORIZONTAL_FOLLOW_MAX_SPEED.to_degrees()
+            );
+            let gaze = world
+                .creature_eye_follow()
+                .map_or(GazeAngles::NEUTRAL, |f| f.current());
+            println!(
+                "Mirada (tras el preset LEJOS): yaw {:+.3} grados, pitch {:+.3} grados hacia la camara | t95 {} s (candidato)",
+                gaze.yaw().to_degrees(),
+                gaze.pitch().to_degrees(),
+                EyeFollowSettings::default().t95_seconds()
+            );
+        }
     }
-    let stats = world.render(&mut framebuffer);
+    let mut last_preset = CreaturePreset::Far;
+    // El modo solar dibuja siempre con su cuadro (inicial, headless y cada cuadro del bucle).
+    let render =
+        |world: &World, framebuffer: &mut Framebuffer, solar: Option<&SolarGame>| match solar {
+            Some(game) => game.render(world, framebuffer),
+            None => Ok(world.render(framebuffer)),
+        };
+    let stats = render(&world, &mut framebuffer, solar_game.as_ref())?;
     println!("{}", describe(&stats));
     let mut show_overlay = options.overlay;
     if options.headless {
@@ -172,6 +433,15 @@ pub fn run_game(options: GameOptions) -> Result<(), String> {
                 world.time,
             );
             draw_overlay(&mut framebuffer, &lines);
+        }
+        if comparison {
+            draw_comparison(&mut framebuffer, &world);
+        }
+        if distant_turn {
+            draw_distant_turn(&mut framebuffer, &world, last_preset);
+        }
+        if horizontal {
+            draw_horizontal_follow(&mut framebuffer, &world, last_preset);
         }
         save_png(&options.output, &framebuffer)?;
         println!("PNG: {} ({width}x{height})", options.output.display());
@@ -188,11 +458,21 @@ pub fn run_game(options: GameOptions) -> Result<(), String> {
         let now = Instant::now();
         let elapsed = now.duration_since(last).as_secs_f64();
         // Limitar dt evita saltos enormes tras arrastrar la ventana o pausar el proceso.
-        let dt = elapsed.min(0.1);
+        let dt = elapsed.min(MAX_PHYSICS_DT);
         last = now;
 
         if window.is_key_pressed(Key::R, KeyRepeat::No) {
-            if near_creature {
+            if let Some(game) = &mut solar_game {
+                // Sol con ojo: R vuelve a la vista FRONTAL (conserva O2, G, H y el reloj).
+                let reset = SolarKeys {
+                    reset: true,
+                    ..SolarKeys::default()
+                };
+                game.apply(&mut world, reset)?;
+            } else if distant_turn || horizontal {
+                // Candidatas: R repite el ultimo preset (conserva O2, objetivo y H).
+                world.place_creature_preset(last_preset)?;
+            } else if near_creature {
                 // Con --near-creature, R vuelve al arranque frente a la criatura.
                 world.place_near_creature()?;
             } else {
@@ -231,10 +511,52 @@ pub fn run_game(options: GameOptions) -> Result<(), String> {
             window.is_key_pressed(Key::M, KeyRepeat::No),
             window.is_key_pressed(Key::N, KeyRepeat::No),
         );
-        world.update(&keyboard_input(&window), dt);
-        // La revelacion avanza con el tiempo real, sin el limite de `dt` de la fisica.
-        world.update_creature_reveal(elapsed);
-        let stats = world.render(&mut framebuffer);
+        if distant_turn || horizontal {
+            for (key, preset) in [
+                (Key::Key7, CreaturePreset::Near),
+                (Key::Key8, CreaturePreset::Far),
+            ] {
+                if window.is_key_pressed(key, KeyRepeat::No) {
+                    last_preset = preset;
+                    world.place_creature_preset(preset)?;
+                }
+            }
+            if window.is_key_pressed(Key::H, KeyRepeat::No) {
+                // Solo cambia la eleccion: apagado vuelve al reposo/frente con su transicion.
+                if horizontal {
+                    let active = world
+                        .creature_horizontal_follow()
+                        .is_some_and(|f| f.is_active());
+                    world.set_creature_horizontal_follow_active(!active)?;
+                } else {
+                    let active = world.creature_distant_turn().is_some_and(|t| t.is_active());
+                    world.set_creature_distant_turn_active(!active)?;
+                }
+            }
+        }
+        if let Some(game) = &mut solar_game {
+            let keys = SolarKeys {
+                frontal: window.is_key_pressed(Key::Key7, KeyRepeat::No),
+                oblique: window.is_key_pressed(Key::Key8, KeyRepeat::No),
+                follow: window.is_key_pressed(Key::H, KeyRepeat::No),
+                target: window.is_key_pressed(Key::G, KeyRepeat::No),
+                reset: false,
+            };
+            game.apply(&mut world, keys)?;
+        }
+        if comparison && window.is_key_pressed(Key::G, KeyRepeat::No) {
+            // Solo cambia la eleccion: la mirada llega con su transicion de siempre.
+            let next = match world.creature_eye_target() {
+                Some(EyeTarget::Camera) => EyeTarget::Ship,
+                _ => EyeTarget::Camera,
+            };
+            world.set_creature_eye_target(next)?;
+        }
+        // Fisica con `dt` limitado; revelacion y mirada con los segundos reales, hacia la nave
+        // ya movida (F5 no las congela). Con las candidatas avanza antes el giro global o el
+        // seguimiento y el ojo los compensa.
+        advance_frame(&mut world, &keyboard_input(&window), elapsed);
+        let stats = render(&world, &mut framebuffer, solar_game.as_ref())?;
 
         if show_overlay {
             let lines = overlay_lines(
@@ -247,6 +569,15 @@ pub fn run_game(options: GameOptions) -> Result<(), String> {
             );
             draw_overlay(&mut framebuffer, &lines);
         }
+        if comparison {
+            draw_comparison(&mut framebuffer, &world);
+        }
+        if distant_turn {
+            draw_distant_turn(&mut framebuffer, &world, last_preset);
+        }
+        if horizontal {
+            draw_horizontal_follow(&mut framebuffer, &world, last_preset);
+        }
         if window.is_key_pressed(Key::P, KeyRepeat::No) {
             save_png(&options.output, &framebuffer)?;
             println!("PNG: {}", options.output.display());
@@ -256,8 +587,12 @@ pub fn run_game(options: GameOptions) -> Result<(), String> {
         title_clock += dt;
         title_frames += 1;
         if title_clock >= 0.5 {
+            // Sol con ojo: su estado (O2, G, H, vista) va en el titulo, no sobre la imagen.
+            let solar_status = solar_game
+                .as_ref()
+                .map_or(String::new(), |game| format!(" | {}", game.title(&world)));
             window.set_title(&format!(
-                "UMBRAL | {:.0} FPS | v {:.0} u/s | culling {} | LOD {} | tri {} desc {} ras {} | frag {}",
+                "UMBRAL | {:.0} FPS | v {:.0} u/s | culling {} | LOD {} | tri {} desc {} ras {} | frag {}{solar_status}",
                 f64::from(title_frames) / title_clock,
                 world.ship.speed,
                 if world.toggles.frustum_culling {

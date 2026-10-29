@@ -8,6 +8,29 @@ use crate::{
 };
 use std::sync::Arc;
 
+/// Combinaciones de `--creature-eye-follow`, sin tocar archivos. Se valida despues de
+/// `validate_staged_flags`: con los dos modos de revelacion gana su error.
+pub fn validate_eye_follow_flags(
+    eye_follow: bool,
+    stages: bool,
+    has_creature: bool,
+    legacy: bool,
+) -> Result<(), String> {
+    if !eye_follow {
+        return Ok(());
+    }
+    if legacy {
+        return Err("--legacy no admite --creature-eye-follow".into());
+    }
+    if !stages {
+        return Err("--creature-eye-follow necesita --creature-reveal-stages".into());
+    }
+    if !has_creature {
+        return Err("--creature-eye-follow necesita --creature-model y --creature-texture".into());
+    }
+    Ok(())
+}
+
 const DEGREE: f64 = std::f64::consts::PI / 180.0;
 /// Limites de la mirada (radianes): yaw +-10 grados y pitch +-8 grados, las poses de V02
 /// aprobadas (cada eje por separado). La envolvente **elipse**
