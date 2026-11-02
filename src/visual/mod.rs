@@ -7,6 +7,8 @@ pub mod creature_horizontal_follow;
 pub mod creature_reveal;
 pub mod creature_viewer;
 pub mod lucid_game;
+pub mod lucid_perception_variant;
+pub mod perception_game;
 pub mod procedural_surface;
 pub mod solar_game;
 pub mod solar_reveal_preview;

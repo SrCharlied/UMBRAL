@@ -25,6 +25,10 @@ use crate::{
         creature_reveal::{RevealSettings, step_debug_oxygen, validate_reveal_flags},
         creature_viewer::validate_output_path,
         lucid_game::set_lucid_surface,
+        perception_game::{
+            OXYGEN_TRANSITION_RATE, OxygenKeys, OxygenTransition, apply_lucid_perception,
+            perception_title, ship_focus,
+        },
         solar_game::{
             SolarGame, SolarKeys, SolarRevealRequest, solar_creature_placement,
             validate_solar_reveal_flags,
@@ -105,7 +109,56 @@ fn describe(stats: &RenderStats) -> String {
 
 /// Juego normal: sin la comparacion de la mirada.
 pub fn run_game(options: GameOptions) -> Result<(), String> {
-    run(options, false, false, false, false, false, false)
+    run(options, Route::default())
+}
+
+/// Modos opt-in del mismo bucle (`run`). Sustituye la lista de booleanos posicionales.
+#[derive(Clone, Copy, Default)]
+struct Route {
+    comparison: bool,
+    distant_turn: bool,
+    horizontal: bool,
+    solar: bool,
+    lucid: bool,
+    void: bool,
+    perception: bool,
+}
+
+/// Escenas con las que se combina `--lucid-perception`: el juego normal o el Sol con ojo
+/// (`solar`), cada uno con o sin la superficie lucida (`lucid`) y el ojo del vacio (`void`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PerceptionRoute {
+    pub lucid: bool,
+    pub void: bool,
+    pub solar: bool,
+}
+
+/// Percepcion alterada aprobada (UMB-310, variante 02) sobre el mismo bucle
+/// (`--lucid-perception`): el mundo se dibuja como siempre y la variante es el ultimo paso de
+/// color de cada cuadro (inicial, headless, ventana y `P`). Valida antes de cualquier IO lo mismo
+/// que la linea de comandos: tamano, tiempo, O2, los guards del juego normal o del Sol con ojo y
+/// `--output` `.png` (tambien sin criatura) distinto de las entradas.
+pub fn run_game_with_lucid_perception(
+    options: GameOptions,
+    route: PerceptionRoute,
+) -> Result<(), String> {
+    validate_command_line_values(&options)?;
+    if route.solar {
+        validate_solar_options(&options)?;
+    } else {
+        validate_normal_options(&options)?;
+    }
+    validate_output_path(&options.output, &[])?;
+    run(
+        options,
+        Route {
+            solar: route.solar,
+            lucid: route.lucid,
+            void: route.void,
+            perception: true,
+            ..Route::default()
+        },
+    )
 }
 
 /// Juego normal con la superficie lucida aprobada en Antena (`--lucid-surface`): solo cambia
@@ -115,7 +168,13 @@ pub fn run_game(options: GameOptions) -> Result<(), String> {
 pub fn run_game_with_lucid_surface(options: GameOptions) -> Result<(), String> {
     validate_command_line_values(&options)?;
     validate_normal_options(&options)?;
-    run(options, false, false, false, false, true, false)
+    run(
+        options,
+        Route {
+            lucid: true,
+            ..Route::default()
+        },
+    )
 }
 
 /// Guards del juego normal sin tocar archivos: modos de la criatura, arranque y alias de
@@ -177,7 +236,13 @@ fn validate_command_line_values(options: &GameOptions) -> Result<(), String> {
 /// Valida antes de cualquier IO que la mirada (y por tanto etapas y criatura) este pedida.
 pub fn run_game_with_eye_comparison(options: GameOptions) -> Result<(), String> {
     validate_comparison_options(&options)?;
-    run(options, true, false, false, false, false, false)
+    run(
+        options,
+        Route {
+            comparison: true,
+            ..Route::default()
+        },
+    )
 }
 
 /// Candidata del giro global lejano (`--creature-distant-turn`, que exige la comparacion): la
@@ -186,7 +251,14 @@ pub fn run_game_with_eye_comparison(options: GameOptions) -> Result<(), String> 
 /// cualquier IO con los mismos guards que la comparacion.
 pub fn run_game_with_distant_turn(options: GameOptions) -> Result<(), String> {
     validate_comparison_options(&options)?;
-    run(options, true, true, false, false, false, false)
+    run(
+        options,
+        Route {
+            comparison: true,
+            distant_turn: true,
+            ..Route::default()
+        },
+    )
 }
 
 /// Candidata 02 del seguimiento corporal horizontal (`--creature-horizontal-follow`, que exige la
@@ -196,7 +268,14 @@ pub fn run_game_with_distant_turn(options: GameOptions) -> Result<(), String> {
 /// guards que la comparacion.
 pub fn run_game_with_horizontal_follow(options: GameOptions) -> Result<(), String> {
     validate_comparison_options(&options)?;
-    run(options, true, false, true, false, false, false)
+    run(
+        options,
+        Route {
+            comparison: true,
+            horizontal: true,
+            ..Route::default()
+        },
+    )
 }
 
 /// Sol con ojo (`--creature-solar-reveal`): la composicion aprobada del preview 03 en el juego
@@ -206,7 +285,13 @@ pub fn run_game_with_horizontal_follow(options: GameOptions) -> Result<(), Strin
 /// `--near`, y alias de `--output`. Sin panel por defecto: el estado va en el titulo.
 pub fn run_game_with_solar_reveal(options: GameOptions) -> Result<(), String> {
     validate_solar_options(&options)?;
-    run(options, false, false, false, true, false, false)
+    run(
+        options,
+        Route {
+            solar: true,
+            ..Route::default()
+        },
+    )
 }
 
 /// Sol con ojo con la superficie lucida aprobada en Antena (`--creature-solar-reveal
@@ -215,7 +300,14 @@ pub fn run_game_with_solar_reveal(options: GameOptions) -> Result<(), String> {
 pub fn run_game_with_solar_and_lucid_surface(options: GameOptions) -> Result<(), String> {
     validate_command_line_values(&options)?;
     validate_solar_options(&options)?;
-    run(options, false, false, false, true, true, false)
+    run(
+        options,
+        Route {
+            solar: true,
+            lucid: true,
+            ..Route::default()
+        },
+    )
 }
 
 /// Ojo del vacio aprobado (UMB-309, variante 02) en Vigilia (`--void-eye`), sobre el juego
@@ -234,7 +326,15 @@ pub fn run_game_with_void_eye(
     } else {
         validate_normal_options(&options)?;
     }
-    run(options, false, false, false, solar, lucid, true)
+    run(
+        options,
+        Route {
+            solar,
+            lucid,
+            void: true,
+            ..Route::default()
+        },
+    )
 }
 
 /// Guards del Sol con ojo sin tocar archivos: criatura sin `near`, sin V1 ni `--near`, y alias
@@ -266,6 +366,27 @@ pub fn advance_frame(world: &mut World, input: &ShipInput, elapsed: f64) {
     world.update(input, elapsed.min(MAX_PHYSICS_DT));
     world.update_creature_reveal(elapsed);
     world.update_creature_eye_follow(elapsed);
+}
+
+/// Un cuadro con `--lucid-perception`: las teclas de O2 cambian el objetivo, el O2 mostrado lo
+/// persigue con los segundos REALES y pasa a `world.debug_oxygen01` (Sol, superficie lucida,
+/// revelacion y postproceso ven el mismo valor gradual); despues el cuadro de siempre. `F5` no
+/// congela la transicion. Atomico: con teclas o segundos invalidos devuelve `Err` sin tocar ni la
+/// transicion ni el mundo.
+pub fn advance_perception_frame(
+    world: &mut World,
+    oxygen: &mut OxygenTransition,
+    keys: OxygenKeys,
+    input: &ShipInput,
+    elapsed: f64,
+) -> Result<(), String> {
+    let mut next = *oxygen;
+    next.press(keys)?;
+    let shown = next.advance(elapsed)?;
+    *oxygen = next;
+    world.debug_oxygen01 = shown;
+    advance_frame(world, input, elapsed);
+    Ok(())
 }
 
 /// Guards de la comparacion (y de la candidata), sin tocar archivos: mirada, etapas, criatura,
@@ -337,15 +458,16 @@ fn draw_horizontal_follow(
     );
 }
 
-fn run(
-    options: GameOptions,
-    comparison: bool,
-    distant_turn: bool,
-    horizontal: bool,
-    solar: bool,
-    lucid: bool,
-    void: bool,
-) -> Result<(), String> {
+fn run(options: GameOptions, route: Route) -> Result<(), String> {
+    let Route {
+        comparison,
+        distant_turn,
+        horizontal,
+        solar,
+        lucid,
+        void,
+        perception,
+    } = route;
     let (width, height) = (options.width, options.height);
     let ship_model = load_model(&ship_model_path())?;
     println!(
@@ -384,6 +506,12 @@ fn run(
     if let Some(index) = options.near {
         world.place_near(index, 25.0)?;
     }
+    // Objetivo manual y O2 mostrado: arrancan EXACTAMENTE en --debug-oxygen (sin presimular).
+    let mut oxygen = if perception {
+        Some(OxygenTransition::new(options.debug_oxygen)?)
+    } else {
+        None
+    };
     let near_creature = options.creature.as_ref().is_some_and(|c| c.near);
     let mut solar_game = None;
     if let Some(requested) = &options.creature {
@@ -540,6 +668,21 @@ fn run(
         };
     let stats = render(&world, &mut framebuffer, solar_game.as_ref())?;
     println!("{}", describe(&stats));
+    if let Some(oxygen) = &oxygen {
+        let focus = ship_focus(&world);
+        println!(
+            "Percepcion alterada (aprobada 02): ultimo paso de color | O2 {:.2} (objetivo {:.2}) | transicion lineal {OXYGEN_TRANSITION_RATE} O2/s reales, bajada y recuperacion | foco nave proyectada ({:.4}, {:.4}){} | 1-4 y M/N cambian el objetivo",
+            oxygen.shown(),
+            oxygen.target(),
+            focus.uv[0],
+            focus.uv[1],
+            if focus.projected {
+                ""
+            } else {
+                " SIN PROYECCION: centro"
+            }
+        );
+    }
     let mut show_overlay = options.overlay;
     if options.headless {
         if show_overlay {
@@ -561,6 +704,10 @@ fn run(
         }
         if horizontal {
             draw_horizontal_follow(&mut framebuffer, &world, last_preset);
+        }
+        if perception {
+            // Ultimo paso de color, tras overlay y paneles: con O2 0 no queda texto brillante.
+            apply_lucid_perception(&mut framebuffer, &world)?;
         }
         save_png(&options.output, &framebuffer)?;
         println!("PNG: {} ({width}x{height})", options.output.display());
@@ -613,6 +760,7 @@ fn run(
         if window.is_key_pressed(Key::F5, KeyRepeat::No) {
             world.toggles.freeze_orbits ^= true;
         }
+        let mut preset = None;
         for (key, value) in [
             (Key::Key1, 1.0),
             (Key::Key2, 0.5),
@@ -620,16 +768,27 @@ fn run(
             (Key::Key4, 0.05),
         ] {
             if window.is_key_pressed(key, KeyRepeat::No) {
-                world.debug_oxygen01 = value;
+                preset = Some(value);
             }
         }
         // Una pulsacion por paso, sin repeticion al mantener la tecla. Los presets 1-4
         // siguen disponibles; M/N se aplican despues si coinciden en el mismo cuadro.
-        world.debug_oxygen01 = step_debug_oxygen(
-            world.debug_oxygen01,
-            window.is_key_pressed(Key::M, KeyRepeat::No),
-            window.is_key_pressed(Key::N, KeyRepeat::No),
-        );
+        let oxygen_keys = OxygenKeys {
+            preset,
+            increase: window.is_key_pressed(Key::M, KeyRepeat::No),
+            decrease: window.is_key_pressed(Key::N, KeyRepeat::No),
+        };
+        if oxygen.is_none() {
+            // Sin --lucid-perception: el O2 salta como siempre.
+            if let Some(value) = oxygen_keys.preset {
+                world.debug_oxygen01 = value;
+            }
+            world.debug_oxygen01 = step_debug_oxygen(
+                world.debug_oxygen01,
+                oxygen_keys.increase,
+                oxygen_keys.decrease,
+            );
+        }
         if distant_turn || horizontal {
             for (key, preset) in [
                 (Key::Key7, CreaturePreset::Near),
@@ -674,7 +833,18 @@ fn run(
         // Fisica con `dt` limitado; revelacion y mirada con los segundos reales, hacia la nave
         // ya movida (F5 no las congela). Con las candidatas avanza antes el giro global o el
         // seguimiento y el ojo los compensa.
-        advance_frame(&mut world, &keyboard_input(&window), elapsed);
+        // Con --lucid-perception las teclas solo cambian el objetivo y el O2 mostrado avanza aqui
+        // con los mismos segundos reales (sin el limite de la fisica y sin que F5 lo congele).
+        match &mut oxygen {
+            Some(oxygen) => advance_perception_frame(
+                &mut world,
+                oxygen,
+                oxygen_keys,
+                &keyboard_input(&window),
+                elapsed,
+            )?,
+            None => advance_frame(&mut world, &keyboard_input(&window), elapsed),
+        }
         let stats = render(&world, &mut framebuffer, solar_game.as_ref())?;
 
         if show_overlay {
@@ -697,6 +867,10 @@ fn run(
         if horizontal {
             draw_horizontal_follow(&mut framebuffer, &world, last_preset);
         }
+        if perception {
+            // El mismo ultimo paso que headless: la ventana y `P` muestran el cuadro final.
+            apply_lucid_perception(&mut framebuffer, &world)?;
+        }
         if window.is_key_pressed(Key::P, KeyRepeat::No) {
             save_png(&options.output, &framebuffer)?;
             println!("PNG: {}", options.output.display());
@@ -710,8 +884,11 @@ fn run(
             let solar_status = solar_game
                 .as_ref()
                 .map_or(String::new(), |game| format!(" | {}", game.title(&world)));
+            let perception_status = oxygen
+                .as_ref()
+                .map_or(String::new(), |o| format!(" | {}", perception_title(o)));
             window.set_title(&format!(
-                "UMBRAL | {:.0} FPS | v {:.0} u/s | culling {} | LOD {} | tri {} desc {} ras {} | frag {}{solar_status}",
+                "UMBRAL | {:.0} FPS | v {:.0} u/s | culling {} | LOD {} | tri {} desc {} ras {} | frag {}{solar_status}{perception_status}",
                 f64::from(title_frames) / title_clock,
                 world.ship.speed,
                 if world.toggles.frustum_culling {

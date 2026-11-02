@@ -31,8 +31,8 @@ cargo run --release --locked
 | `F4` | Activar/desactivar el nivel de detalle (LOD) |
 | `F5` | Congelar/reanudar las órbitas (y, con `--void-eye`, la respiración de la corona de Vigilia) |
 | `F6` | Activar/desactivar el descarte de caras traseras |
-| `1`–`4` | Oxígeno de depuración 100 / 50 / 25 / 5 %; controla la revelación en los modos de criatura y, con `--lucid-surface`, las grietas de Antena |
-| `M` / `N` | Subir / bajar el oxígeno de depuración en pasos de 5 puntos |
+| `1`–`4` | Oxígeno de depuración 100 / 50 / 25 / 5 %; controla la revelación en los modos de criatura y, con `--lucid-surface`, las grietas de Antena. Con `--lucid-perception` fija el **objetivo** y el O₂ llega de forma progresiva |
+| `M` / `N` | Subir / bajar el oxígeno de depuración en pasos de 5 puntos (con `--lucid-perception`, el objetivo) |
 | `7` / `8` | En el modo solar: vista frontal / oblicua |
 | `G` / `H` | En el modo solar: objetivo cámara/nave / seguimiento horizontal ON/OFF |
 | `Esc` | Salir |
@@ -85,6 +85,24 @@ cargo run --release --locked -- --creature-model ruta/modelo.obj --creature-text
 - Integración promovida al proyecto principal y verificada por Veliona, con revisión independiente y pruebas de los lanzadores reales. La comprobación física de los controles queda a cargo de Charlie.
 
 Detalles, contrato y pruebas: [`docs/void-eye-preview.md`](docs/void-eye-preview.md#integración-en-el-juego---void-eye).
+
+### Percepción alterada por oxígeno
+
+```bash
+cargo run --release --locked -- --lucid-perception --near 3
+cargo run --release --locked -- --lucid-perception --lucid-surface --void-eye --near 3
+cargo run --release --locked -- --creature-model ruta/modelo.obj --creature-texture ruta/textura.png --creature-solar-reveal --lucid-perception
+```
+
+`--lucid-perception` (opt-in) aplica la percepción aprobada por Charlie (UMB-310, variante 02) como **último paso de color** de cada cuadro: grises + morado del monstruo, túnel que deja ver casi solo la nave y visión borrosa por debajo de 50 % de O₂, y negro total solo con O₂ 0. Con O₂ ≥ 50 % el cuadro es idéntico al juego sin el flag. El mundo se dibuja como siempre, con el O₂ vivo; el postproceso no toca profundidad, cámara ni geometría.
+
+- **Progresivo:** `1`–`4` y `M`/`N` cambian el **objetivo** de O₂; el O₂ mostrado lo sigue en línea recta a 0.25 por segundo real (de 100 % a 0 en 4 s), al bajar y al recuperar, y llega exactamente. Ese O₂ gradual es el que reciben el Sol, Antena, la revelación y el postproceso. `F5` no congela la transición y `R` conserva O₂ y objetivo. Nada consume oxígeno solo.
+- **Foco:** la nave proyectada con la cámara real (no el centro de la pantalla).
+- Aplica a la ventana, a `P` y a `--headless`, también sobre `--overlay` (con O₂ 0 no queda texto encendido). El título muestra O₂ y objetivo; no hay HUD nuevo.
+- Se combina con el juego normal o con `--creature-solar-reveal`, en ambos con o sin `--lucid-surface` y `--void-eye`. Se rechaza con `--legacy` y, fuera del Sol con ojo, con `--creature-eye-compare`, `--creature-distant-turn` o `--creature-horizontal-follow`, antes de leer archivos. `--output` debe ser `.png`.
+- No incluye combate, ataque, daño ni estrellas observadoras.
+
+Detalles, contrato y pruebas: [`docs/perception-game.md`](docs/perception-game.md).
 
 ### Resolución
 
@@ -164,6 +182,7 @@ Criatura texturizada dentro del juego: ruta estática, revelación por oxígeno,
 
 - Por defecto, los tres planetas comparten esfera y el shader iluminado; solo cambian tamaño, color y órbita. La identidad propia (UMB-302), props, procedural y shaders de Asfixia Lúcida son de Persona 3.
 - `AnimatedSun` es una primera versión (UMB-307). `LucidSurface` (superficie lúcida aprobada) solo se usa en Antena con `--lucid-surface`, y `VoidEye` (ojo del vacío aprobado) solo en Vigilia con `--void-eye`.
+- La percepción alterada solo existe con `--lucid-perception` y procesa el cuadro completo en CPU: a 720p con O₂ bajo cuesta más por cuadro (desenfoque y túnel); no se ha medido ni optimizado. La muestra de ataque del preview no está en el juego.
 - No hay colisión, gravedad ni asistencia orbital (Persona 2). La cámara sigue a la nave a distancia fija, con la orientación suavizada y el campo de visión más abierto con la velocidad; no evita atravesar planetas.
 - El LOD solo cubre las esferas de los cuerpos (tres niveles por tamaño aparente, con histéresis del 15 %); los props de Persona 3 aún no lo usan.
 - El recorte se hace solo contra el plano cercano; los demás lados los resuelve la caja de pantalla del rasterizador (verificado con un triángulo de 2000 unidades que cruza la cámara).
