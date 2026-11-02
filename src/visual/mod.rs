@@ -17,3 +17,5 @@ pub mod static_creature;
 pub mod surface_placement;
 pub mod textured;
 pub mod void_game;
+pub mod watching_stars;
+pub mod watching_stars_game;

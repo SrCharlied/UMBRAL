@@ -104,6 +104,23 @@ cargo run --release --locked -- --creature-model ruta/modelo.obj --creature-text
 
 Detalles, contrato y pruebas: [`docs/perception-game.md`](docs/perception-game.md).
 
+### Estrellas observadoras
+
+```bash
+cargo run --release --locked -- --watching-stars
+cargo run --release --locked -- --watching-stars --lucid-surface --void-eye --near 3
+cargo run --release --locked -- --creature-model ruta/modelo.obj --creature-texture ruta/textura.png --creature-solar-reveal --watching-stars
+```
+
+`--watching-stars` (opt-in) integra las estrellas observadoras aprobadas por Charlie (UMB-310, preview02): las mismas 700 estrellas del cielo abren, según baja el O₂, ojos pequeños de 9×5 px cuya pupila mira a la nave proyectada con la cámara real. **Implica `--lucid-perception`** (pasarlo también es redundante): misma escena, mismo O₂ manual progresivo y la misma percepción como último paso de color.
+
+- **Orden de cada cuadro** (inicial, `--headless`, ventana y `P`): escena real (juego normal o Sol con ojo) → ojos → `--overlay` y paneles → percepción. Los ojos nunca se pintan encima del overlay; con O₂ 0 la percepción deja todo en negro, overlay incluido.
+- **O₂:** los ojos usan el O₂ **mostrado**, el mismo que el Sol, Antena, la revelación y la percepción. Con O₂ ≥ 65 % no hay ninguna observadora y el cuadro es el del juego sin el flag. `1`–`4`, `M`/`N`, `F5` y `R` funcionan igual que con `--lucid-perception`; no hay HUD, teclas ni consumo automático nuevos.
+- Se combina con las mismas escenas que la percepción y se rechaza igual, antes de leer archivos: con `--legacy` y, fuera del Sol con ojo, con `--creature-eye-compare`, `--creature-distant-turn` o `--creature-horizontal-follow`. `--output` debe ser `.png`.
+- Sin `--watching-stars`, todas las rutas (incluida `--lucid-perception`) quedan exactamente como antes.
+
+Detalles, contrato y pruebas: [`docs/watching-stars-game.md`](docs/watching-stars-game.md).
+
 ### Resolución
 
 | Parámetro | Valor |
@@ -183,6 +200,7 @@ Criatura texturizada dentro del juego: ruta estática, revelación por oxígeno,
 - Por defecto, los tres planetas comparten esfera y el shader iluminado; solo cambian tamaño, color y órbita. La identidad propia (UMB-302), props, procedural y shaders de Asfixia Lúcida son de Persona 3.
 - `AnimatedSun` es una primera versión (UMB-307). `LucidSurface` (superficie lúcida aprobada) solo se usa en Antena con `--lucid-surface`, y `VoidEye` (ojo del vacío aprobado) solo en Vigilia con `--void-eye`.
 - La percepción alterada solo existe con `--lucid-perception` y procesa el cuadro completo en CPU: a 720p con O₂ bajo cuesta más por cuadro (desenfoque y túnel); no se ha medido ni optimizado. La muestra de ataque del preview no está en el juego.
+- Las estrellas observadoras solo existen con `--watching-stars`; recalculan en CPU el catálogo, el orden fijo y los ojos de las 700 estrellas en cada cuadro, sin medir ni optimizar. Al 25 % de O₂, con la percepción, se leen sutiles (aceptado por Charlie).
 - No hay colisión, gravedad ni asistencia orbital (Persona 2). La cámara sigue a la nave a distancia fija, con la orientación suavizada y el campo de visión más abierto con la velocidad; no evita atravesar planetas.
 - El LOD solo cubre las esferas de los cuerpos (tres niveles por tamaño aparente, con histéresis del 15 %); los props de Persona 3 aún no lo usan.
 - El recorte se hace solo contra el plano cercano; los demás lados los resuelve la caja de pantalla del rasterizador (verificado con un triángulo de 2000 unidades que cruza la cámara).

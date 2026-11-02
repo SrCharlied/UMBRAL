@@ -38,6 +38,7 @@ use crate::{
         },
         static_creature::{CreatureOptions, CreaturePlacement, StaticCreature},
         void_game::set_void_eye,
+        watching_stars_game::render_game_frame,
     },
 };
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
@@ -122,6 +123,8 @@ struct Route {
     lucid: bool,
     void: bool,
     perception: bool,
+    /// Estrellas observadoras (`--watching-stars`); siempre con `perception`.
+    watching: bool,
 }
 
 /// Escenas con las que se combina `--lucid-perception`: el juego normal o el Sol con ojo
@@ -142,6 +145,28 @@ pub fn run_game_with_lucid_perception(
     options: GameOptions,
     route: PerceptionRoute,
 ) -> Result<(), String> {
+    run_with_perception(options, route, false)
+}
+
+/// Estrellas observadoras aprobadas (UMB-310, preview02) sobre el mismo bucle
+/// (`--watching-stars`, que implica `--lucid-perception`): la misma escena `route` y el mismo O2
+/// manual progresivo que la percepcion; en cada cuadro (inicial, headless, ventana y `P`) los ojos
+/// van sobre la escena ya dibujada, antes de overlays y paneles, y la percepcion sigue siendo el
+/// ultimo paso de color. Los ojos usan el O2 MOSTRADO, la camara real y la nave real. Valida antes
+/// de cualquier IO lo mismo que `run_game_with_lucid_perception`.
+pub fn run_game_with_watching_stars(
+    options: GameOptions,
+    route: PerceptionRoute,
+) -> Result<(), String> {
+    run_with_perception(options, route, true)
+}
+
+/// Guards comunes de las dos entradas con percepcion (antes de cualquier IO) y su `Route`.
+fn run_with_perception(
+    options: GameOptions,
+    route: PerceptionRoute,
+    watching: bool,
+) -> Result<(), String> {
     validate_command_line_values(&options)?;
     if route.solar {
         validate_solar_options(&options)?;
@@ -156,6 +181,7 @@ pub fn run_game_with_lucid_perception(
             lucid: route.lucid,
             void: route.void,
             perception: true,
+            watching,
             ..Route::default()
         },
     )
@@ -467,6 +493,7 @@ fn run(options: GameOptions, route: Route) -> Result<(), String> {
         lucid,
         void,
         perception,
+        watching,
     } = route;
     let (width, height) = (options.width, options.height);
     let ship_model = load_model(&ship_model_path())?;
@@ -660,14 +687,23 @@ fn run(options: GameOptions, route: Route) -> Result<(), String> {
         }
     }
     let mut last_preset = CreaturePreset::Far;
-    // El modo solar dibuja siempre con su cuadro (inicial, headless y cada cuadro del bucle).
-    let render =
-        |world: &World, framebuffer: &mut Framebuffer, solar: Option<&SolarGame>| match solar {
-            Some(game) => game.render(world, framebuffer),
-            None => Ok(world.render(framebuffer)),
-        };
-    let stats = render(&world, &mut framebuffer, solar_game.as_ref())?;
+    // El modo solar dibuja siempre con su cuadro (inicial, headless y cada cuadro del bucle); con
+    // `--watching-stars` el mismo helper pone los ojos sobre la escena, antes de overlays y post.
+    let render = |world: &World, framebuffer: &mut Framebuffer, solar: Option<&SolarGame>| {
+        render_game_frame(world, framebuffer, solar, watching)
+    };
+    let frame = render(&world, &mut framebuffer, solar_game.as_ref())?;
+    let stats = frame.stats;
     println!("{}", describe(&stats));
+    if let Some(eyes) = &frame.watching_stars {
+        println!(
+            "Estrellas observadoras (aprobadas 02): O2 mostrado {:.2} | ojos {} (activas {}, ocluidas {}) | miran a la nave proyectada con la camara real | antes de overlays y percepcion",
+            eyes.oxygen01,
+            eyes.eyes.len(),
+            eyes.active_ids.len(),
+            eyes.occluded_ids.len()
+        );
+    }
     if let Some(oxygen) = &oxygen {
         let focus = ship_focus(&world);
         println!(
@@ -845,7 +881,7 @@ fn run(options: GameOptions, route: Route) -> Result<(), String> {
             )?,
             None => advance_frame(&mut world, &keyboard_input(&window), elapsed),
         }
-        let stats = render(&world, &mut framebuffer, solar_game.as_ref())?;
+        let stats = render(&world, &mut framebuffer, solar_game.as_ref())?.stats;
 
         if show_overlay {
             let lines = overlay_lines(

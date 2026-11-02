@@ -6,6 +6,7 @@ use umbral::{
         run_game_with_eye_comparison, run_game_with_horizontal_follow,
         run_game_with_lucid_perception, run_game_with_lucid_surface,
         run_game_with_solar_and_lucid_surface, run_game_with_solar_reveal, run_game_with_void_eye,
+        run_game_with_watching_stars,
     },
     assets::{obj::load_model, ship_model_path},
     config::{DEFAULT_HEIGHT, DEFAULT_WIDTH},
@@ -27,6 +28,7 @@ use umbral::{
         staged_creature_reveal::validate_staged_flags,
         static_creature::CreatureOptions,
         void_game::{VoidEyeRequest, validate_void_eye_flags},
+        watching_stars_game::validate_watching_stars_flags,
     },
 };
 
@@ -57,6 +59,7 @@ fn run() -> Result<(), String> {
     let mut lucid_surface = false;
     let mut void_eye = false;
     let mut lucid_perception = false;
+    let mut watching_stars = false;
     let mut args = std::env::args().skip(1);
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -105,6 +108,7 @@ fn run() -> Result<(), String> {
             "--lucid-surface" => lucid_surface = true,
             "--void-eye" => void_eye = true,
             "--lucid-perception" => lucid_perception = true,
+            "--watching-stars" => watching_stars = true,
             "--debug-oxygen" => {
                 debug_oxygen = Some(parse_debug_oxygen(
                     &args
@@ -120,7 +124,8 @@ fn run() -> Result<(), String> {
                     "cargo run --release -- [--headless] [--output archivo.png] [--frames N] [--width N] [--height N]\nResolucion por defecto: {DEFAULT_WIDTH}x{DEFAULT_HEIGHT} (maximo {MAX_PIXELS} pixeles)\nA/D o flechas: rotar | R: restablecer | P: guardar PNG | Esc: salir\nCriatura estatica (debug, opt-in): --creature-model modelo.obj --creature-texture textura.png (siempre juntos) [--near-creature: arrancar frente a ella; R vuelve ahi]. Los flags de criatura son incompatibles con --legacy; solo el arranque --near-creature es incompatible con --near. Con criatura, --output debe ser .png y distinto de las entradas\nRevelacion por oxigeno (debug, opt-in): --creature-reveal (requiere la criatura; no mueve la nave) | --debug-oxygen X: oxigeno de depuracion inicial en [0, 1] (por defecto 1); teclas 1-4: 100/50/25/5 %\nRevelacion por etapas (debug, opt-in): --creature-reveal-stages (requiere la criatura; incompatible con --creature-reveal; no mueve la nave): primero el ojo y despues el cuerpo\nMirada local (debug, opt-in): --creature-eye-follow (requiere --creature-reveal-stages): el ojo mira a la nave dentro de sus limites; cuerpo y tentaculos quietos\nComparacion de la mirada (debug, opt-in): --creature-eye-compare (requiere --creature-eye-follow): arranca mirando a la camara; G alterna NAVE/CAMARA; panel inferior\nGiro global lejano (candidata, debug, opt-in): --creature-distant-turn (requiere --creature-eye-compare): de lejos la criatura entera gira lenta y limitada (20/12 grados, t95 8 s) hacia el punto de G; de cerca solo el ojo. Arranca LEJOS; H giro ON/OFF, 7 CERCA, 8 LEJOS, R repite el preset\nSeguimiento horizontal (candidata 02, debug, opt-in): --creature-horizontal-follow (requiere --creature-eye-compare; no con --creature-distant-turn): cerca y lejos el cuerpo entero gira solo en horizontal, lento (t95 4 s, tope 18 grados/s), hacia el punto de G en cualquier lado. Arranca LEJOS; H seguimiento ON/OFF (OFF vuelve al frente), 7 CERCA, 8 LEJOS, R repite el preset\nSol con ojo (composicion aprobada 03, opt-in): --creature-solar-reveal (requiere --creature-model y --creature-texture; implica etapas, mirada, comparacion y seguimiento horizontal 02, que pueden repetirse; no con --legacy, --creature-reveal, --near, --near-creature ni --creature-distant-turn): la criatura en el centro del Sol (radio 80, yaw 0), mirada a la camara y luz de camara; arranca FRONTAL. 7 FRONTAL, 8 OBLICUA, R vuelve a FRONTAL, H seguimiento ON/OFF, G CAMARA/NAVE, 1-4 y M/N el O2 (titulo de la ventana)
 Superficie lucida (aprobada 02, opt-in): --lucid-surface: el planeta Antena existente usa la superficie lucida (grietas rojo-ambar bajo 50 % de O2; con O2 >= 50 % el cuadro es el de siempre); mismo material, radio, orbita y rotacion. Con el juego normal (--near 1 arranca junto a Antena; admite la criatura estatica y su revelacion) o con --creature-solar-reveal; no con --legacy ni, fuera del Sol con ojo, con --creature-eye-compare, --creature-distant-turn o --creature-horizontal-follow. 1-4 y M/N cambian el O2
 Ojo del vacio (aprobado 02, opt-in): --void-eye: el planeta Vigilia existente usa el ojo del vacio (pupila negra que mira siempre a la NAVE y una corona rojo-ambar que respira con el reloj de simulacion; F5 la congela); mismo material, radio, orbita y rotacion; no depende del O2. Con el juego normal (--near 3 arranca junto a Vigilia; admite la criatura estatica y su revelacion) o con --creature-solar-reveal, y en ambos con o sin --lucid-surface; no con --legacy ni, fuera del Sol con ojo, con --creature-eye-compare, --creature-distant-turn o --creature-horizontal-follow
-Percepcion alterada (aprobada 02, opt-in): --lucid-perception: ultimo paso de color de cada cuadro (grises + morado del monstruo, tunel hacia la nave proyectada y vision borrosa bajo 50 % de O2; negro total solo con O2 0; con O2 >= 50 % el cuadro es el de siempre). Con el juego normal o con --creature-solar-reveal, y en ambos con o sin --lucid-surface y --void-eye; no con --legacy ni, fuera del Sol con ojo, con --creature-eye-compare, --creature-distant-turn o --creature-horizontal-follow; --output debe ser .png. Progresivo: 1-4 y M/N cambian el OBJETIVO de O2 y el O2 mostrado lo sigue a 0.25 por segundo real, al bajar y al recuperar (F5 no lo congela; R lo conserva; nada consume O2 solo); el titulo muestra O2 y objetivo"
+Percepcion alterada (aprobada 02, opt-in): --lucid-perception: ultimo paso de color de cada cuadro (grises + morado del monstruo, tunel hacia la nave proyectada y vision borrosa bajo 50 % de O2; negro total solo con O2 0; con O2 >= 50 % el cuadro es el de siempre). Con el juego normal o con --creature-solar-reveal, y en ambos con o sin --lucid-surface y --void-eye; no con --legacy ni, fuera del Sol con ojo, con --creature-eye-compare, --creature-distant-turn o --creature-horizontal-follow; --output debe ser .png. Progresivo: 1-4 y M/N cambian el OBJETIVO de O2 y el O2 mostrado lo sigue a 0.25 por segundo real, al bajar y al recuperar (F5 no lo congela; R lo conserva; nada consume O2 solo); el titulo muestra O2 y objetivo
+Estrellas observadoras (aprobadas 02, opt-in): --watching-stars: implica --lucid-perception (el flag explicito es redundante) y sus mismas escenas y combinaciones: con el juego normal o con --creature-solar-reveal, con o sin --lucid-surface y --void-eye; no con --legacy ni, fuera del Sol con ojo, con --creature-eye-compare, --creature-distant-turn o --creature-horizontal-follow; --output debe ser .png. Las 700 estrellas del cielo abren ojos pequenos segun el O2 MOSTRADO (ninguna con O2 >= 65 %) que miran a la nave proyectada con la camara real; van sobre la escena, antes del overlay y de la percepcion. Mismos controles: 1-4 y M/N el objetivo de O2, F5 no congela la transicion, R la conserva"
                 );
                 return Ok(());
             }
@@ -150,6 +155,16 @@ Percepcion alterada (aprobada 02, opt-in): --lucid-perception: ultimo paso de co
     )?;
     validate_lucid_perception_flags(
         lucid_perception,
+        LucidSurfaceRequest {
+            legacy,
+            solar: creature_solar_reveal,
+            eye_compare: creature_eye_compare,
+            distant_turn: creature_distant_turn,
+            horizontal_follow: creature_horizontal_follow,
+        },
+    )?;
+    validate_watching_stars_flags(
+        watching_stars,
         LucidSurfaceRequest {
             legacy,
             solar: creature_solar_reveal,
@@ -231,12 +246,16 @@ Percepcion alterada (aprobada 02, opt-in): --lucid-perception: ultimo paso de co
             creature_eye_follow,
             debug_oxygen: debug_oxygen.unwrap_or(1.0),
         };
+        let route = PerceptionRoute {
+            lucid: lucid_surface,
+            void: void_eye,
+            solar: creature_solar_reveal,
+        };
+        if watching_stars {
+            // Implica --lucid-perception (redundante si se pasa): misma escena y mismo O2 manual.
+            return run_game_with_watching_stars(options, route);
+        }
         if lucid_perception {
-            let route = PerceptionRoute {
-                lucid: lucid_surface,
-                void: void_eye,
-                solar: creature_solar_reveal,
-            };
             return run_game_with_lucid_perception(options, route);
         }
         if void_eye {
