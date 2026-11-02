@@ -22,8 +22,9 @@ use crate::{
         creature_horizontal_follow::{
             HORIZONTAL_FOLLOW_MAX_SPEED, HORIZONTAL_FOLLOW_T95_SECONDS, horizontal_follow_lines,
         },
-        creature_reveal::{RevealSettings, step_debug_oxygen},
+        creature_reveal::{RevealSettings, step_debug_oxygen, validate_reveal_flags},
         creature_viewer::validate_output_path,
+        lucid_game::set_lucid_surface,
         solar_game::{
             SolarGame, SolarKeys, SolarRevealRequest, solar_creature_placement,
             validate_solar_reveal_flags,
@@ -32,6 +33,7 @@ use crate::{
             CREATURE_EYE_REGION, StagedRevealSettings, validate_staged_flags,
         },
         static_creature::{CreatureOptions, CreaturePlacement, StaticCreature},
+        void_game::set_void_eye,
     },
 };
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
@@ -103,7 +105,71 @@ fn describe(stats: &RenderStats) -> String {
 
 /// Juego normal: sin la comparacion de la mirada.
 pub fn run_game(options: GameOptions) -> Result<(), String> {
-    run(options, false, false, false, false)
+    run(options, false, false, false, false, false, false)
+}
+
+/// Juego normal con la superficie lucida aprobada en Antena (`--lucid-surface`): solo cambia
+/// el shader de Antena; con O2 >= 50 % el cuadro es el de siempre. Admite la criatura estatica
+/// y su revelacion como el juego normal. Valida antes de cualquier IO lo mismo que la linea de
+/// comandos: tamano, tiempo, O2, modos de la criatura, arranque y alias de `--output`.
+pub fn run_game_with_lucid_surface(options: GameOptions) -> Result<(), String> {
+    validate_command_line_values(&options)?;
+    validate_normal_options(&options)?;
+    run(options, false, false, false, false, true, false)
+}
+
+/// Guards del juego normal sin tocar archivos: modos de la criatura, arranque y alias de
+/// `--output`.
+fn validate_normal_options(options: &GameOptions) -> Result<(), String> {
+    let has_creature = options.creature.is_some();
+    validate_reveal_flags(options.creature_reveal, has_creature, false, false)?;
+    validate_staged_flags(
+        options.creature_reveal_stages,
+        has_creature,
+        options.creature_reveal,
+        false,
+    )?;
+    validate_eye_follow_flags(
+        options.creature_eye_follow,
+        options.creature_reveal_stages,
+        has_creature,
+        false,
+    )?;
+    if let Some(creature) = &options.creature {
+        if creature.near && options.near.is_some() {
+            return Err(
+                "--near y --near-creature son incompatibles: elige un solo arranque".into(),
+            );
+        }
+        validate_output_path(&options.output, &[&creature.model, &creature.texture])?;
+    }
+    Ok(())
+}
+
+/// Tamano, tiempo y O2 con el contrato de la linea de comandos (`--width`/`--height` positivos
+/// y dentro del maximo del framebuffer, `--time` finito >= 0, `--debug-oxygen` en `[0, 1]`).
+fn validate_command_line_values(options: &GameOptions) -> Result<(), String> {
+    let (width, height) = (options.width, options.height);
+    if width == 0 {
+        return Err("--width debe ser mayor que cero".into());
+    }
+    if height == 0 {
+        return Err("--height debe ser mayor que cero".into());
+    }
+    let max = crate::renderer::framebuffer::MAX_PIXELS;
+    if width.checked_mul(height).is_none_or(|n| n > max) {
+        return Err(format!("{width}x{height} (maximo {max} pixeles)"));
+    }
+    if !(options.time.is_finite() && options.time >= 0.0) {
+        return Err("--time necesita segundos >= 0".into());
+    }
+    if !(0.0..=1.0).contains(&options.debug_oxygen) {
+        return Err(format!(
+            "--debug-oxygen necesita un valor entre 0 y 1: {}",
+            options.debug_oxygen
+        ));
+    }
+    Ok(())
 }
 
 /// Juego con la comparacion A/B de la mirada (`--creature-eye-compare`): arranca mirando a la
@@ -111,7 +177,7 @@ pub fn run_game(options: GameOptions) -> Result<(), String> {
 /// Valida antes de cualquier IO que la mirada (y por tanto etapas y criatura) este pedida.
 pub fn run_game_with_eye_comparison(options: GameOptions) -> Result<(), String> {
     validate_comparison_options(&options)?;
-    run(options, true, false, false, false)
+    run(options, true, false, false, false, false, false)
 }
 
 /// Candidata del giro global lejano (`--creature-distant-turn`, que exige la comparacion): la
@@ -120,7 +186,7 @@ pub fn run_game_with_eye_comparison(options: GameOptions) -> Result<(), String> 
 /// cualquier IO con los mismos guards que la comparacion.
 pub fn run_game_with_distant_turn(options: GameOptions) -> Result<(), String> {
     validate_comparison_options(&options)?;
-    run(options, true, true, false, false)
+    run(options, true, true, false, false, false, false)
 }
 
 /// Candidata 02 del seguimiento corporal horizontal (`--creature-horizontal-follow`, que exige la
@@ -130,7 +196,7 @@ pub fn run_game_with_distant_turn(options: GameOptions) -> Result<(), String> {
 /// guards que la comparacion.
 pub fn run_game_with_horizontal_follow(options: GameOptions) -> Result<(), String> {
     validate_comparison_options(&options)?;
-    run(options, true, false, true, false)
+    run(options, true, false, true, false, false, false)
 }
 
 /// Sol con ojo (`--creature-solar-reveal`): la composicion aprobada del preview 03 en el juego
@@ -139,6 +205,41 @@ pub fn run_game_with_horizontal_follow(options: GameOptions) -> Result<(), Strin
 /// cualquier IO con los mismos guards que la linea de comandos: criatura sin `near`, sin V1 ni
 /// `--near`, y alias de `--output`. Sin panel por defecto: el estado va en el titulo.
 pub fn run_game_with_solar_reveal(options: GameOptions) -> Result<(), String> {
+    validate_solar_options(&options)?;
+    run(options, false, false, false, true, false, false)
+}
+
+/// Sol con ojo con la superficie lucida aprobada en Antena (`--creature-solar-reveal
+/// --lucid-surface`): la misma composicion y los mismos guards que `run_game_with_solar_reveal`,
+/// mas los de tamano, tiempo y O2 de la linea de comandos, todo antes de cualquier IO.
+pub fn run_game_with_solar_and_lucid_surface(options: GameOptions) -> Result<(), String> {
+    validate_command_line_values(&options)?;
+    validate_solar_options(&options)?;
+    run(options, false, false, false, true, true, false)
+}
+
+/// Ojo del vacio aprobado (UMB-309, variante 02) en Vigilia (`--void-eye`), sobre el juego
+/// normal (`solar = false`) o el Sol con ojo (`solar = true`), con o sin la superficie lucida en
+/// Antena (`lucid`). Valida antes de cualquier IO lo mismo que la linea de comandos en cada
+/// ruta: tamano, tiempo, O2 y alias de `--output`, mas los guards del juego normal o del Sol con
+/// ojo.
+pub fn run_game_with_void_eye(
+    options: GameOptions,
+    lucid: bool,
+    solar: bool,
+) -> Result<(), String> {
+    validate_command_line_values(&options)?;
+    if solar {
+        validate_solar_options(&options)?;
+    } else {
+        validate_normal_options(&options)?;
+    }
+    run(options, false, false, false, solar, lucid, true)
+}
+
+/// Guards del Sol con ojo sin tocar archivos: criatura sin `near`, sin V1 ni `--near`, y alias
+/// de `--output`.
+fn validate_solar_options(options: &GameOptions) -> Result<(), String> {
     validate_solar_reveal_flags(
         true,
         SolarRevealRequest {
@@ -152,7 +253,7 @@ pub fn run_game_with_solar_reveal(options: GameOptions) -> Result<(), String> {
     if let Some(creature) = &options.creature {
         validate_output_path(&options.output, &[&creature.model, &creature.texture])?;
     }
-    run(options, false, false, false, true)
+    Ok(())
 }
 
 /// Limite de `dt` de la fisica: evita saltos enormes tras arrastrar la ventana o pausar.
@@ -242,6 +343,8 @@ fn run(
     distant_turn: bool,
     horizontal: bool,
     solar: bool,
+    lucid: bool,
+    void: bool,
 ) -> Result<(), String> {
     let (width, height) = (options.width, options.height);
     let ship_model = load_model(&ship_model_path())?;
@@ -262,6 +365,22 @@ fn run(
     world.debug_oxygen01 = options.debug_oxygen;
     world.toggles.frustum_culling = options.culling;
     world.toggles.lod = options.lod;
+    if lucid {
+        // Una sola vez: todas las rutas de dibujo (inicial, headless, bucle y P) usan el shader
+        // del cuerpo con el tiempo y el O2 vivos del mundo.
+        let index = set_lucid_surface(&mut world, true)?;
+        println!(
+            "Superficie lucida (aprobada 02): {} (cuerpo {index}) usa LucidSurface | O2 {:.2} (grietas bajo 50 %) | 1-4 y M/N cambian el O2",
+            world.system.bodies[index].name, world.debug_oxygen01
+        );
+    }
+    if void {
+        let index = set_void_eye(&mut world, true)?;
+        println!(
+            "Ojo del vacio (aprobado 02): {} (cuerpo {index}) usa VoidEye",
+            world.system.bodies[index].name
+        );
+    }
     if let Some(index) = options.near {
         world.place_near(index, 25.0)?;
     }

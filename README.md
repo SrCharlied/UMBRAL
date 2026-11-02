@@ -29,9 +29,9 @@ cargo run --release --locked
 | `F1` | Mostrar/ocultar el overlay técnico (FPS, contadores de trabajo, interruptores) |
 | `F3` | Activar/desactivar el descarte por frustum |
 | `F4` | Activar/desactivar el nivel de detalle (LOD) |
-| `F5` | Congelar/reanudar las órbitas |
+| `F5` | Congelar/reanudar las órbitas (y, con `--void-eye`, la respiración de la corona de Vigilia) |
 | `F6` | Activar/desactivar el descarte de caras traseras |
-| `1`–`4` | Oxígeno de depuración 100 / 50 / 25 / 5 %; controla la revelación en los modos de criatura |
+| `1`–`4` | Oxígeno de depuración 100 / 50 / 25 / 5 %; controla la revelación en los modos de criatura y, con `--lucid-surface`, las grietas de Antena |
 | `M` / `N` | Subir / bajar el oxígeno de depuración en pasos de 5 puntos |
 | `7` / `8` | En el modo solar: vista frontal / oblicua |
 | `G` / `H` | En el modo solar: objetivo cámara/nave / seguimiento horizontal ON/OFF |
@@ -52,6 +52,39 @@ cargo run --release --locked -- --creature-model ruta/modelo.obj --creature-text
 La criatura usa assets externos que no se incluyen en el repositorio. El flag activa las etapas, la mirada a la cámara y el seguimiento horizontal aprobados; no requiere repetir sus flags individuales. Empieza en la vista frontal con oxígeno al 100 %, el Sol normal y las órbitas vivas. La revelación se prueba con `M`/`N` o los presets `1`–`4`: al 50 % exacto el ojo aún está oculto; aparece al bajar de ese umbral. El Sol visual se desvanece entre 30 y 25 %, sin apagar la iluminación global ni eliminar el cuerpo celeste lógico.
 
 Sin el flag y sin assets externos se conserva el juego base. La composición está aceptada por Charlie; los detalles, restricciones, controles y pruebas están en [`docs/static-creature.md`](docs/static-creature.md#sol-con-ojo-en-el-juego-creature-solar-reveal). No se añade consumo automático de oxígeno ni colisiones.
+
+### Superficie lúcida en Antena
+
+```bash
+cargo run --release --locked -- --lucid-surface --near 1
+cargo run --release --locked -- --creature-model ruta/modelo.obj --creature-texture ruta/textura.png --creature-solar-reveal --lucid-surface
+```
+
+`--lucid-surface` (opt-in) cambia solo el shader del planeta Antena existente a la superficie lúcida aprobada por Charlie (variante 02): grietas rojo-ámbar que aparecen al bajar el oxígeno de 50 %. Con O₂ ≥ 50 % el cuadro es idéntico al juego sin el flag. Material, radio, órbita, rotación, LOD, descarte, cámara, nave y los demás cuerpos no cambian. El O₂ y el tiempo son los del juego (`--debug-oxygen`, `--time`, `1`–`4`, `M`/`N`); no hay consumo automático de oxígeno ni rótulos nuevos.
+
+- `--near 1` arranca junto a Antena; `R` sigue reiniciando la nave como siempre.
+- Se combina con el juego normal (también con la criatura estática y su revelación) o con `--creature-solar-reveal`, sin cambiar su composición ni sus teclas.
+- Se rechaza con `--legacy` y, fuera del Sol con ojo, con `--creature-eye-compare`, `--creature-distant-turn` o `--creature-horizontal-follow`, antes de leer archivos.
+
+Detalles, contrato y pruebas: [`docs/lucid-surface-preview.md`](docs/lucid-surface-preview.md#integración-en-el-juego---lucid-surface).
+
+### Ojo del vacío en Vigilia
+
+```bash
+cargo run --release --locked -- --void-eye --near 3
+cargo run --release --locked -- --void-eye --lucid-surface --near 3
+cargo run --release --locked -- --creature-model ruta/modelo.obj --creature-texture ruta/textura.png --creature-solar-reveal --void-eye
+```
+
+`--void-eye` (opt-in) cambia solo el shader del planeta Vigilia existente al ojo del vacío aprobado por Charlie (UMB-309, variante 02): una pupila negra que mira siempre a la **nave** y una única corona rojo-ámbar que respira lentamente. Material, radio, órbita, rotación, fase, LOD, descarte, cámara, nave y los demás cuerpos no cambian. No depende del oxígeno.
+
+- La respiración sigue el reloj de simulación (`--time`); `F5` la congela, pero el ojo sigue a la nave si esta se mueve. No hay teclas ni rótulos nuevos.
+- `--near 3` arranca junto a Vigilia; `R` sigue reiniciando la nave como siempre.
+- Se combina con el juego normal (también con la criatura estática y su revelación) o con `--creature-solar-reveal`, en ambos casos con o sin `--lucid-surface`. `G` del Sol con ojo cambia solo la mirada de la criatura, no el objetivo del ojo de Vigilia.
+- Se rechaza con `--legacy` y, fuera del Sol con ojo, con `--creature-eye-compare`, `--creature-distant-turn` o `--creature-horizontal-follow`, antes de leer archivos.
+- Integración promovida al proyecto principal y verificada por Veliona, con revisión independiente y pruebas de los lanzadores reales. La comprobación física de los controles queda a cargo de Charlie.
+
+Detalles, contrato y pruebas: [`docs/void-eye-preview.md`](docs/void-eye-preview.md#integración-en-el-juego---void-eye).
 
 ### Resolución
 
@@ -129,8 +162,8 @@ Criatura texturizada dentro del juego: ruta estática, revelación por oxígeno,
 
 ## Limitaciones conocidas
 
-- Los tres planetas comparten esfera y el shader iluminado; solo cambian tamaño, color y órbita. La identidad propia (UMB-302), props, procedural y shaders de Asfixia Lúcida son de Persona 3.
-- Los shaders `LucidSurface` y `VoidEye` son marcadores que reutilizan `LitPlanet`; `AnimatedSun` es una primera versión (UMB-307).
+- Por defecto, los tres planetas comparten esfera y el shader iluminado; solo cambian tamaño, color y órbita. La identidad propia (UMB-302), props, procedural y shaders de Asfixia Lúcida son de Persona 3.
+- `AnimatedSun` es una primera versión (UMB-307). `LucidSurface` (superficie lúcida aprobada) solo se usa en Antena con `--lucid-surface`, y `VoidEye` (ojo del vacío aprobado) solo en Vigilia con `--void-eye`.
 - No hay colisión, gravedad ni asistencia orbital (Persona 2). La cámara sigue a la nave a distancia fija, con la orientación suavizada y el campo de visión más abierto con la velocidad; no evita atravesar planetas.
 - El LOD solo cubre las esferas de los cuerpos (tres niveles por tamaño aparente, con histéresis del 15 %); los props de Persona 3 aún no lo usan.
 - El recorte se hace solo contra el plano cercano; los demás lados los resuelve la caja de pantalla del rasterizador (verificado con un triángulo de 2000 unidades que cruza la cámara).
