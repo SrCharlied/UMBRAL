@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     assets::{obj::Model, primitives::uv_sphere},
-    math::{Mat4, Vec3},
+    math::{Mat4, Transform, Vec3},
     renderer::{
         framebuffer::Framebuffer,
         pipeline::draw_model,
@@ -55,6 +55,10 @@ impl Default for DebugToggles {
 }
 
 pub struct World {
+    pub gameplay: crate::gameplay::GameplayState,
+    pub orbit_assist: bool,
+    pub forced_oxygen: Option<f64>,
+    mirrored_oxygen: f64,
     pub system: SolarSystem,
     pub ship: Ship,
     pub camera: Camera,
@@ -80,6 +84,10 @@ impl World {
         let ship = Self::start_ship();
         let body_lod = vec![Cell::new(0); SolarSystem::demo().bodies.len()];
         let mut world = Self {
+            gameplay: crate::gameplay::GameplayState::default(),
+            orbit_assist: false,
+            forced_oxygen: None,
+            mirrored_oxygen: 1.0,
             system: SolarSystem::demo(),
             ship,
             camera: Camera::new(BASE_FOV, aspect, 0.3, 6000.0)?,
@@ -124,8 +132,46 @@ impl World {
     }
 
     pub fn reset_ship(&mut self) {
+        let settings = self.gameplay.settings;
+        self.gameplay = crate::gameplay::GameplayState::default();
+        self.gameplay.settings = settings;
+        self.time = 0.0;
+        self.orbit_assist = false;
+        self.forced_oxygen = None;
+        self.debug_oxygen01 = 1.0;
+        self.mirrored_oxygen = 1.0;
         self.ship = Self::start_ship();
         self.snap_camera();
+    }
+
+    /// Oxigeno visual: override explicito, control legado, o valor real.
+    pub fn oxygen01(&self) -> f64 {
+        let value = self.forced_oxygen.unwrap_or({
+            if self.debug_oxygen01 != self.mirrored_oxygen {
+                self.debug_oxygen01
+            } else {
+                self.gameplay.oxygen01
+            }
+        });
+        if value.is_finite() {
+            value.clamp(0.0, 1.0)
+        } else {
+            self.gameplay.oxygen01
+        }
+    }
+
+    pub fn set_debug_oxygen(&mut self, value: f64) {
+        if value.is_finite() {
+            self.forced_oxygen = Some(value.clamp(0.0, 1.0));
+            self.debug_oxygen01 = value.clamp(0.0, 1.0);
+            self.mirrored_oxygen = self.debug_oxygen01;
+        }
+    }
+
+    pub fn clear_debug_oxygen(&mut self) {
+        self.forced_oxygen = None;
+        self.debug_oxygen01 = self.gameplay.oxygen01;
+        self.mirrored_oxygen = self.debug_oxygen01;
     }
 
     /// Coloca la nave a `surface_gap` unidades de la superficie del cuerpo `index`,
@@ -153,6 +199,22 @@ impl World {
     /// orientada con `camera_basis`, que sigue a la nave con suavizado. Asi la distancia
     /// camara-nave es constante a cualquier velocidad y solo la orientacion "se arrastra".
     fn desired_camera(&self) -> (Vec3, Vec3) {
+        if self.orbit_assist
+            && let Some(body) = self
+                .gameplay
+                .navigation
+                .assisted_planet
+                .and_then(|index| self.system.bodies.get(index))
+        {
+            let center = body.position(self.time);
+            let radial = (self.ship.position - center).normalized();
+            // Navigation conserva este eje perpendicular al plano orbital, incluso en polos.
+            let up = self.ship.up();
+            return (
+                self.ship.position + radial * self.chase_distance + up * self.chase_height,
+                center,
+            );
+        }
         let basis = &self.camera_basis;
         let back = basis.transform_dir(Vec3::Z);
         let up = basis.transform_dir(Vec3::Y);
@@ -160,22 +222,72 @@ impl World {
         (position, self.ship.position - back * 30.0)
     }
 
+    fn desired_camera_up(&self) -> Vec3 {
+        if self.orbit_assist && self.gameplay.navigation.assisted_planet.is_some() {
+            self.ship.up()
+        } else {
+            self.camera_basis.transform_dir(Vec3::Y)
+        }
+    }
+
     fn snap_camera(&mut self) {
         self.camera_basis = self.ship.orientation;
         let (position, target) = self.desired_camera();
         self.camera.position = position;
         self.camera.target = target;
-        self.camera.up = self.camera_basis.transform_dir(Vec3::Y);
+        self.camera.up = self.desired_camera_up();
     }
 
     pub fn update(&mut self, input: &ShipInput, dt: f64) {
         if !(dt.is_finite() && dt > 0.0) {
             return;
         }
+        if self.gameplay.game_over || self.gameplay.objective_complete {
+            return;
+        }
+        if self.debug_oxygen01 != self.mirrored_oxygen && self.debug_oxygen01.is_finite() {
+            self.forced_oxygen = Some(self.debug_oxygen01.clamp(0.0, 1.0));
+        }
+        self.gameplay.tick(dt);
+        self.debug_oxygen01 = self.oxygen01();
+        self.mirrored_oxygen = self.debug_oxygen01;
+        if self.gameplay.game_over {
+            return;
+        }
+        let old_time = self.time;
         if !self.toggles.freeze_orbits {
             self.time += dt;
         }
+        let previous = self.ship.position;
         self.ship.update(input, dt);
+        self.gameplay
+            .navigation
+            .apply_gravity(&mut self.ship, &self.system, self.time, dt);
+        self.gameplay.navigation.assist(
+            &mut self.ship,
+            input,
+            &self.system,
+            old_time,
+            self.time,
+            dt,
+            self.orbit_assist,
+        );
+        self.gameplay.navigation.resolve_collisions(
+            &mut self.ship,
+            previous,
+            &self.system,
+            old_time,
+            self.time,
+        );
+        self.gameplay.collect_along(
+            previous,
+            self.ship.position,
+            &self.system,
+            old_time,
+            self.time,
+        );
+        self.debug_oxygen01 = self.forced_oxygen.unwrap_or(self.gameplay.oxygen01);
+        self.mirrored_oxygen = self.debug_oxygen01;
         // La base de la camara persigue la orientacion de la nave con suavizado
         // independiente de los FPS; mezclar y reortonormalizar es estable para pasos chicos.
         let k = smoothing(CAMERA_TURN_RESPONSE, dt);
@@ -189,7 +301,7 @@ impl World {
         let (position, target) = self.desired_camera();
         self.camera.position = position;
         self.camera.target = target;
-        self.camera.up = self.camera_basis.transform_dir(Vec3::Y);
+        self.camera.up = self.desired_camera_up();
         // Apertura mayor con la velocidad para dar sensacion de impulso.
         let fraction = (self.ship.speed
             / (self.ship.settings.max_speed * self.ship.settings.boost_multiplier))
@@ -204,14 +316,88 @@ impl World {
     fn context(&self) -> ShaderContext {
         ShaderContext {
             elapsed_time: self.time,
-            oxygen01: self.debug_oxygen01.clamp(0.0, 1.0),
+            oxygen01: self.oxygen01(),
             camera_position: self.camera.position,
             ship_position: self.ship.position,
             light_position: self.system.light_position(),
         }
     }
 
-    /// Dibuja el cuadro completo: fondo, estrellas, cuerpos y nave.
+    /// Descarte conservador sobre el centro real del modelo, antes de transformar vertices.
+    fn draw_instance(
+        &self,
+        fb: &mut Framebuffer,
+        model: &Model,
+        transform: &Transform,
+        material: &Material,
+        shader: ShaderKind,
+        context: &ShaderContext,
+    ) -> RenderStats {
+        let center = transform
+            .matrix()
+            .transform_point(Vec3::from_array(model.bounds_center));
+        let radius = model.bounds_radius
+            * transform
+                .scale
+                .x
+                .abs()
+                .max(transform.scale.y.abs())
+                .max(transform.scale.z.abs());
+        if self.toggles.frustum_culling && !self.camera.frustum().sphere_visible(center, radius) {
+            return RenderStats {
+                objects_submitted: 1,
+                objects_culled: 1,
+                triangles_submitted: model.faces.len(),
+                triangles_culled: model.faces.len(),
+                ..RenderStats::default()
+            };
+        }
+        draw_model(
+            fb,
+            model,
+            transform,
+            material,
+            shader,
+            context,
+            &self.camera,
+        )
+    }
+
+    fn draw_collectibles(
+        &self,
+        fb: &mut Framebuffer,
+        context: &ShaderContext,
+        stats: &mut RenderStats,
+    ) {
+        let model = &self.sphere_lods[2];
+        for (anchor, is_log) in self
+            .gameplay
+            .resources
+            .iter()
+            .map(|r| (r, false))
+            .chain(self.gameplay.logs.iter().map(|log| (&log.anchor, true)))
+        {
+            if anchor.collected {
+                continue;
+            }
+            if let Some(position) = anchor.position(&self.system, self.time) {
+                let transform = Transform {
+                    position,
+                    rotation: Vec3::new(0.0, self.time * 1.5, 0.0),
+                    scale: Vec3::splat(if is_log { 1.8 } else { 2.4 }),
+                };
+                let material = if is_log {
+                    Material::solid(0.95, 0.55, 0.12)
+                } else {
+                    Material::solid(0.12, 0.9, 0.75)
+                };
+                *stats +=
+                    self.draw_instance(fb, model, &transform, &material, ShaderKind::Flat, context);
+            }
+        }
+    }
+
+    /// Dibuja el cuadro completo: fondo, estrellas, cuerpos, balizas y nave.
     pub fn render(&self, fb: &mut Framebuffer) -> RenderStats {
         fb.clear();
         let mut stats = RenderStats::default();
@@ -249,6 +435,7 @@ impl World {
             drawn.objects_submitted = 0; // ya contado arriba
             stats += drawn;
         }
+        self.draw_collectibles(fb, &context, &mut stats);
         let ship_transform = self.ship.transform(SHIP_MODEL_YAW);
         stats.objects_submitted += 1;
         stats += RenderStats {

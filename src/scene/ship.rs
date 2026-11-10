@@ -1,5 +1,4 @@
-//! Nave con movimiento minimo obligatorio (UMB-106). Persona 1; Persona 2 lo refina en
-//! UMB-201 sin romper esta API. Todo depende de `dt`, nunca del numero de cuadros.
+//! Control progresivo (UMB-201), compatible con la API de UMB-106.
 
 use crate::math::{Mat4, Transform, Vec3};
 
@@ -52,11 +51,34 @@ pub struct Ship {
 
 /// Factor de suavizado exponencial independiente de la tasa de cuadros.
 pub fn smoothing(rate: f64, dt: f64) -> f64 {
-    1.0 - (-rate * dt).exp()
+    if !rate.is_finite() || rate <= 0.0 || !dt.is_finite() || dt <= 0.0 {
+        return 0.0;
+    }
+    -(-rate * dt).exp_m1()
+}
+
+/// Un paso de vuelo admite hasta un minuto; pausas mayores deben dividirse en el caller.
+/// Evita desbordamientos y trabajo ilimitado ante tiempos corruptos.
+pub(crate) fn valid_dt(dt: f64) -> bool {
+    dt.is_finite() && dt > 0.0 && dt <= 60.0
+}
+
+pub(crate) fn nonnegative(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        fallback
+    }
 }
 
 impl Ship {
     pub fn new(position: Vec3, forward: Vec3) -> Self {
+        let forward = forward.normalized();
+        let forward = if forward == Vec3::ZERO {
+            -Vec3::Z
+        } else {
+            forward
+        };
         // Misma base que una camara mirando a `forward`, invertida a mundo.
         let view = Mat4::look_at(Vec3::ZERO, forward, Vec3::Y);
         let mut orientation = Mat4::IDENTITY;
@@ -66,7 +88,11 @@ impl Ship {
             }
         }
         Self {
-            position,
+            position: if position.is_finite() {
+                position
+            } else {
+                Vec3::ZERO
+            },
             orientation,
             speed: 0.0,
             angular: Vec3::ZERO,
@@ -83,25 +109,69 @@ impl Ship {
         self.orientation.transform_dir(Vec3::X)
     }
     pub fn update(&mut self, input: &ShipInput, dt: f64) {
-        if !(dt.is_finite() && dt > 0.0) {
+        if !valid_dt(dt) {
             return;
         }
         let s = self.settings;
-        let top = s.max_speed * if input.boost { s.boost_multiplier } else { 1.0 };
-        let target_speed = match input.thrust.clamp(-1.0, 1.0) {
-            t if t >= 0.0 => t * top,
-            t => t * s.max_speed * s.reverse_fraction,
+        let defaults = ShipSettings::default();
+        let max_speed = nonnegative(s.max_speed, defaults.max_speed);
+        let boost = nonnegative(s.boost_multiplier, defaults.boost_multiplier).max(1.0);
+        let top = max_speed * if input.boost { boost } else { 1.0 };
+        let normalized = |v: f64| {
+            if v.is_finite() {
+                v.clamp(-1.0, 1.0)
+            } else {
+                0.0
+            }
         };
-        self.speed += (target_speed - self.speed) * smoothing(s.speed_response, dt);
-
-        let target = Vec3::new(input.pitch, input.yaw, input.roll) * s.turn_rate;
-        self.angular += (target - self.angular) * smoothing(s.turn_response, dt);
-        // Giro en ejes locales: sin bloqueo de cardan porque se acumula una matriz.
-        let step = Mat4::rotation_axis(Vec3::X, self.angular.x * dt)
-            * Mat4::rotation_axis(Vec3::Y, self.angular.y * dt)
-            * Mat4::rotation_axis(Vec3::Z, self.angular.z * dt);
-        self.orientation = (self.orientation * step).orthonormalized();
-        self.position += self.forward() * (self.speed * dt);
+        let target_speed = match normalized(input.thrust) {
+            t if t >= 0.0 => t * top,
+            t => {
+                t * max_speed * nonnegative(s.reverse_fraction, defaults.reverse_fraction).min(1.0)
+            }
+        };
+        let rate = nonnegative(s.speed_response, defaults.speed_response);
+        let turn_response = nonnegative(s.turn_response, defaults.turn_response);
+        let target = Vec3::new(
+            normalized(input.pitch),
+            normalized(input.yaw),
+            normalized(input.roll),
+        ) * nonnegative(s.turn_rate, defaults.turn_rate);
+        // Subpasos acotados para integrar trayectoria curva; las velocidades se integran
+        // exactamente y el desplazamiento usa la orientacion en el punto medio.
+        let count = (dt * 240.0).ceil() as usize;
+        let h = dt / count as f64;
+        let mut next = *self;
+        for _ in 0..count {
+            let factor = smoothing(rate, h);
+            let distance =
+                next.speed * h + (target_speed - next.speed) * integrated_response(rate, h);
+            next.speed += (target_speed - next.speed) * factor;
+            let angle =
+                next.angular * h + (target - next.angular) * integrated_response(turn_response, h);
+            let half_angle = next.angular * (h * 0.5)
+                + (target - next.angular) * integrated_response(turn_response, h * 0.5);
+            let rotate = |v: Vec3| {
+                let length = v.length();
+                if length == 0.0 {
+                    Mat4::IDENTITY
+                } else {
+                    Mat4::rotation_axis(v, length)
+                }
+            };
+            let mid = next.orientation * rotate(half_angle);
+            next.position += mid.transform_dir(-Vec3::Z) * distance;
+            next.orientation = (next.orientation * rotate(angle)).orthonormalized();
+            next.angular += (target - next.angular) * smoothing(turn_response, h);
+            if !next.position.is_finite()
+                || !next.speed.is_finite()
+                || !next.angular.is_finite()
+                || !next.orientation.m.iter().flatten().all(|x| x.is_finite())
+            {
+                return; // El paso se confirma entero o se conserva el estado anterior.
+            }
+        }
+        *self = next;
     }
     /// Transformacion de dibujo; `model_yaw` corrige hacia donde mira el modelo (D11).
     pub fn transform(&self, model_yaw: f64) -> Transform {
@@ -111,5 +181,15 @@ impl Ship {
             rotation,
             scale: Vec3::ONE,
         }
+    }
+}
+
+/// Integral de 1-exp(-rate*t), estable tambien cuando rate*dt es muy pequeno.
+fn integrated_response(rate: f64, dt: f64) -> f64 {
+    let x = rate * dt;
+    if x < 1e-4 {
+        dt * (x * 0.5 - x * x / 6.0 + x * x * x / 24.0)
+    } else {
+        dt - smoothing(rate, dt) / rate
     }
 }

@@ -2,7 +2,7 @@
 
 Proyecto final de Gráficas por Computadora: exploración de un sistema solar pequeño desde una nave deteriorada, con un renderizador 3D **por software** escrito en Rust.
 
-> **Estado actual: Hito 1 (parte de Persona 1).** Hay pipeline 3D por software con matrices modelo-vista-proyección, recorte contra el plano cercano, z-buffer, atributos interpolados con corrección de perspectiva y shader de fragmentos por `enum`. La escena tiene un Sol, tres planetas que orbitan y rotan según el tiempo, y la nave con vuelo básico. **Aún no hay** oxígeno, recursos, registros, planetas con identidad propia, procedural ni Asfixia Lúcida.
+> **Estado actual: Hito 1 y contribución de Persona 2 (Hito 2).** Se conserva el pipeline del equipo y se integra control progresivo, asistencia orbital, colisiones, gravedad opcional (desactivada), oxígeno real, cápsulas, tres registros y victoria/reinicio. La documentación y evidencia de esta contribución están en [docs/persona2.md](docs/persona2.md). Los shaders, modelos, procedural y dirección artística de Persona 3 no se implementan ni sustituyen en esta rama.
 
 ![Acercamiento a Antena con el overlay técnico](docs/img/overlay.png)
 
@@ -24,19 +24,21 @@ cargo run --release --locked
 | Flechas arriba/abajo | Cabeceo |
 | `Q` / `E` | Alabeo |
 | `Shift` | Impulso ×5 para cruzar el sistema |
-| `R` | Reiniciar la nave |
+| `R` | Reiniciar la partida: nave, oxígeno, recursos, registros y estados terminales |
+| `O` | Alternar asistencia orbital. La entrada manual la interrumpe temporalmente; al soltar controles puede recapturar. Pulsa `O` para desactivarla de forma persistente. |
+| `0` | Quitar el oxígeno visual de depuración y volver al oxígeno real |
 | `P` | Guardar el framebuffer actual en PNG |
 | `F1` | Mostrar/ocultar el overlay técnico (FPS, contadores de trabajo, interruptores) |
 | `F3` | Activar/desactivar el descarte por frustum |
 | `F4` | Activar/desactivar el nivel de detalle (LOD) |
 | `F5` | Congelar/reanudar las órbitas |
 | `F6` | Activar/desactivar el descarte de caras traseras |
-| `1`–`4` | Oxígeno de depuración 100 / 50 / 25 / 5 % (aún sin efecto visual) |
+| `1`–`4` | Oxígeno visual de depuración 100 / 50 / 25 / 5 %; no modifica la reserva real de gameplay |
 | `Esc` | Salir |
 
 El título de la ventana muestra FPS, velocidad y contadores (triángulos enviados, descartados y rasterizados, fragmentos).
 
-Opciones: `--headless`, `--output archivo.png`, `--frames N` (cierra la ventana tras N frames), `--width N`, `--height N`, `--time S` (tiempo simulado inicial), `--near CUERPO` (arranca junto al cuerpo 0 = Sol, 1 = Antena, 2 = Osario, 3 = Vigilia), `--no-culling`, `--no-lod`, `--overlay` (dibuja el overlay también en `--headless`), `--legacy` (visor ortográfico heredado, donde `A`/`D` rotan la nave), `--help`.
+Opciones implementadas: `--headless`, `--output archivo.png`, `--frames N` (cierra la ventana tras N frames), `--width N`, `--height N`, `--time S` (tiempo simulado inicial), `--near CUERPO` (arranca junto al cuerpo 0 = Sol, 1 = Antena, 2 = Osario, 3 = Vigilia), `--no-culling`, `--no-lod`, `--overlay` (dibuja el overlay también en `--headless`) y `--legacy` (visor ortográfico heredado). `--help` existe, pero su texto es básico y está desactualizado; actualizarlo queda pendiente.
 
 Medición de rendimiento sin ventana: `cargo run --release --example frame_time`.
 
@@ -48,9 +50,9 @@ Medición de rendimiento sin ventana: `cargo run --release --example frame_time`
 | `--width N` / `--height N` | Enteros positivos; cada uno sustituye su valor por defecto de forma independiente |
 | Límite | `width × height ≤ 16 777 216` píxeles (`MAX_PIXELS`, equivale a 4096×4096), validado por `Framebuffer::new` antes de reservar memoria, incluido el desbordamiento de la multiplicación |
 
-La ventana y el framebuffer se crean con las mismas dimensiones: no hay escalado ni cambio de tamaño de ventana. Un valor faltante, no entero, cero o demasiado grande termina con código 1 y un mensaje en `Error: ...`, sin escribir PNG ni abrir ventana. No se ha medido rendimiento a ninguna resolución: todavía no existe la escena del juego.
+La ventana y el framebuffer se crean con las mismas dimensiones: no hay escalado ni cambio de tamaño de ventana. Un valor faltante, no entero, cero o demasiado grande termina con código 1 y un mensaje en `Error: ...`, sin escribir PNG ni abrir ventana. Hay una escena de juego con actualización por `dt`; el rendimiento no se ha medido sistemáticamente.
 
-- La rotación avanza 0.03 rad **por frame**, no por tiempo: es comportamiento heredado y se sustituye en UMB-106.
+- Solo el visor `--legacy` conserva giros de `A`/`D` de 0.03 rad por frame. El juego integra movimiento y giro usando `dt`.
 - `P` escribe por defecto en `renders/nave.png`, ruta que `.gitignore` no excluye. Para pruebas manuales conviene `--output renders/tmp/vista.png`.
 - Los controles se documentan a partir del código; su validación manual en ventana corresponde a Charlie y **no está registrada todavía**.
 
@@ -82,6 +84,10 @@ cargo run --release --locked -- --legacy --headless --width 1280 --height 960 --
 
 Con las dependencias ya descargadas puede añadirse `--offline`. Las pruebas cubren framebuffer y profundidad, rasterización en ambos órdenes de vértices, lector OBJ/MTL con la nave real, exportación PNG, la línea de comandos (resolución por defecto 1280×720 y rechazo de dimensiones inválidas) y una **regresión determinista de la nave**: `tests/ship_baseline.rs` compara el render a 1280×960 píxel a píxel y el PNG headless con `--width 1280 --height 960` byte a byte contra `tests/fixtures/legacy_ship_1280x960.png`. Ese fixture se generó con este repositorio y es idéntico al `renders/nave.png` del laboratorio de origen (SHA-256 `590617750436c32056a02602f94cfb9243e4398599005e94efefa99683e80bfa`).
 
+Verificación posterior de esta reanudación, atribuida al coordinador: `cargo test --locked --no-fail-fast` y `cargo clippy --all-targets --locked -- -D warnings` pasaron. En esta reanudación, `cargo fmt --check` pasó después de aplicar `rustfmt` explícito con `skip_children=true` a la lista de Rust permitida.
+
+El coordinador generó fuera del repositorio `scratch/umbral-persona2-prepublish.png` mediante ejecución headless a 640×360 con `near 1`; el feedback inferior es legible. Esta captura no acredita narrativa completa ni pilotaje humano.
+
 ## Estructura
 
 ```text
@@ -98,6 +104,7 @@ src/renderer/image.rs       Exportación a PNG
 src/renderer/legacy.rs      Visor heredado, solo con --legacy (baseline de regresión)
 src/debug/overlay.rs       Overlay técnico con fuente de mapa de bits propia (F1)
 src/scene/                  Cámara, nave, sistema solar y World (update + render)
+src/gameplay/               Persona 2: oxígeno, recursos/registros, navegación y estados
 src/assets/obj.rs           Lector OBJ/MTL: v, vt, vn, caras triangulares, Kd, esfera envolvente
 src/assets/primitives.rs    Esfera UV generada por código
 assets/models/ship/         OBJ y MTL de la nave
@@ -110,7 +117,7 @@ docs/architecture.md        Propietarios, contratos y decisiones
 
 - Los tres planetas comparten esfera y el shader iluminado; solo cambian tamaño, color y órbita. La identidad propia (UMB-302), props, procedural y shaders de Asfixia Lúcida son de Persona 3.
 - Los shaders `LucidSurface` y `VoidEye` son marcadores que reutilizan `LitPlanet`; `AnimatedSun` es una primera versión (UMB-307).
-- No hay colisión, gravedad ni asistencia orbital (Persona 2). La cámara sigue a la nave a distancia fija, con la orientación suavizada y el campo de visión más abierto con la velocidad; no evita atravesar planetas.
+- La contribución de Persona 2 usa colisiones esféricas con barrido relativo lineal entre frames, no física orbital realista. En asistencia la cámara mira al planeta; en vuelo libre conserva el seguimiento del equipo. Los props futuros no tienen colisión propia.
 - El LOD solo cubre las esferas de los cuerpos (tres niveles por tamaño aparente, con histéresis del 15 %); los props de Persona 3 aún no lo usan.
 - El recorte se hace solo contra el plano cercano; los demás lados los resuelve la caja de pantalla del rasterizador (verificado con un triángulo de 2000 unidades que cruza la cámara).
 - El descarte de objetos reduce vértices procesados, pero a 720p el tiempo lo domina el relleno de fragmentos; el efecto en milisegundos es pequeño.
@@ -131,7 +138,12 @@ docs/architecture.md        Propietarios, contratos y decisiones
 | SrCharlied | Laboratorio base (código, pruebas, modelo) y dirección del proyecto |
 | Persona 1, 2, 3 | Asignación pendiente; ver responsabilidades en `docs/architecture.md` |
 
+## Gameplay de Persona 2
+
+La reserva real dura 420 segundos sin cápsulas; cada cápsula turquesa recupera 15 %. Los tres registros dorados pueden recogerse en cualquier orden; después hay que acercarse al Sol para completar el objetivo. La recolección es automática por proximidad o cruce del trayecto. El texto de feedback usa la fuente existente del equipo y no reemplaza su HUD artístico. La gravedad se activa modificando `gameplay.navigation.settings.gravity_strength`; su valor predeterminado es cero.
+
 ## Uso de asistencia de IA
 
 - **UMB-001/UMB-002** (importación, renombre, reorganización de módulos, prueba de regresión de la nave y esta documentación inicial) se realizaron con **Claude Code** (Anthropic) bajo dirección de Charlie, con planificación y revisión apoyadas por un asistente de IA local. La revisión humana de este trabajo está pendiente.
+- La contribución de Persona 2 se implementó y revisó con tres agentes **Codex** coordinados desde Hermes en **Herdr**, aprovechando un borrador inicial de gameplay generado con Hermes. Se mantuvo el renderer del equipo. La revisión y defensa humana siguen siendo responsabilidad de los integrantes.
 - El uso de IA en el laboratorio de origen no está declarado en su README; debe completarlo su autor.

@@ -215,6 +215,9 @@ fn la_camara_se_arrastra_al_girar_y_converge_al_dejar_de_girar() {
 #[test]
 fn el_campo_de_vision_se_abre_con_la_velocidad_y_vuelve_al_frenar() {
     let mut world = new_world();
+    // Aislar el lente: la ruta original hacia -Z cruza el Sol y la colision frena.
+    // Fuera del plano orbital y apuntando hacia afuera, sin cambiar las aserciones.
+    world.ship = Ship::new(Vec3::new(2000.0, 2000.0, 2000.0), Vec3::X);
     let base = world.camera.fov_y;
     let go = ShipInput {
         thrust: 1.0,
