@@ -110,6 +110,18 @@ pub struct World {
     solar_preview: Option<SolarPreview>,
 }
 
+/// Capa BODY alternativa del compositor solar (debug opt-in, `visual::tentacle_solar_game`): UNA
+/// malla en espacio OBJ de la criatura = la particion `body` vigente (sus vertices, UV y normales como
+/// PREFIJO exacto) con caras quitadas por procedencia verificada + un apendice (el brazo evaluado)
+/// anadido despues. Se dibuja como la capa `Body` de siempre (mismo transform, material, shader,
+/// textura y alfa del cuerpo); el ojo, el Sol y el compositor no cambian. `extra_bounds_obj` es la
+/// esfera OBJ del apendice: el descarte la suma a la esfera original de la criatura (nunca recoloca
+/// ni recalibra la criatura).
+pub struct SolarBodyOverride<'a> {
+    pub model: &'a Model,
+    pub extra_bounds_obj: (Vec3, f64),
+}
+
 /// Preview solar: el cuerpo celeste que hace de Sol (su representacion se funde; el cuerpo,
 /// las orbitas y la luz global siguen intactos), la luz local de la criatura y los buffers
 /// reutilizables de la pareja central (`render_solar_reveal_preview` toma `&self`).
@@ -937,6 +949,35 @@ impl World {
     /// cuerpo de la criatura con sus alfas aprobados, su pose (mirada y seguimiento 02) y la
     /// luz local del preview.
     pub fn render_solar_reveal_preview(&self, fb: &mut Framebuffer) -> Result<RenderStats, String> {
+        self.render_solar_reveal_preview_with(fb, None)
+    }
+    /// `render_solar_reveal_preview` con una capa `Body` alternativa opcional (`None`: exactamente
+    /// el mismo cuadro y los mismos contadores). Con `Some`, TODO lo del override (particion
+    /// vigente como prefijo exacto, indices, finitud, esfera y shader) se valida ANTES de limpiar
+    /// el cuadro: un `Err` deja color y profundidad intactos. Con el ojo oculto (O2 >= 50 %) el
+    /// override no se dibuja: la criatura entera sigue invisible como siempre.
+    pub fn render_solar_reveal_preview_with(
+        &self,
+        fb: &mut Framebuffer,
+        body: Option<&SolarBodyOverride<'_>>,
+    ) -> Result<RenderStats, String> {
+        // Some es un contrato explicito incluso si el ojo esta oculto; None conserva el fallback.
+        let extra_sphere = if let Some(o) = body {
+            let (Some(preview), Some(mode), Some(creature)) =
+                (&self.solar_preview, &self.staged_reveal, &self.creature)
+            else {
+                return Err(
+                    "capa Body alternativa requiere preview solar, etapas y criatura".into(),
+                );
+            };
+            let sun = self.preview_sun(preview)?;
+            if creature.placement().center() != sun.position(self.time) {
+                return Err("capa Body alternativa: criatura no anclada al Sol".into());
+            }
+            Some(self.validate_body_override(preview, mode, creature, o)?)
+        } else {
+            None
+        };
         let (Some(preview), Some(mode), Some(creature)) =
             (&self.solar_preview, &self.staged_reveal, &self.creature)
         else {
@@ -953,6 +994,7 @@ impl World {
                 "la criatura del preview solar ya no esta anclada en el centro del Sol {center:?}"
             ));
         }
+        // Some ya paso el preflight, incluso antes del fallback por alfa.
         fb.clear();
         let mut stats = RenderStats::default();
         let context = self.context();
@@ -993,8 +1035,9 @@ impl World {
         let cull_radius = posed.map_or(creature.placement().world_radius(), |(_, rig, _)| {
             rig.cull_radius
         });
-        let creature_culled =
-            self.toggles.frustum_culling && !frustum.sphere_visible(center, cull_radius);
+        let creature_culled = self.toggles.frustum_culling
+            && !frustum.sphere_visible(center, cull_radius)
+            && extra_sphere.is_none_or(|(c, r)| !frustum.sphere_visible(c, r));
         let cache = match posed {
             Some((_, rig, angles)) if !creature_culled => {
                 let mut cache = rig.cache.borrow_mut();
@@ -1049,13 +1092,19 @@ impl World {
         }
         stats.objects_submitted += 1;
         if creature_culled {
-            let faces = creature.model().faces.len();
+            let faces = body.map_or(creature.model().faces.len(), |o| {
+                o.model.faces.len() + parts.eye().faces.len()
+            });
             stats.objects_culled += 1;
             stats.triangles_submitted += faces;
             stats.triangles_culled += faces;
         } else {
             for (kind, model, alpha) in [
-                (PairLayerKind::Body, parts.body(), alphas.body),
+                (
+                    PairLayerKind::Body,
+                    body.map_or(parts.body(), |o| o.model),
+                    alphas.body,
+                ),
                 (PairLayerKind::Eye, eye_model, alphas.eye),
             ] {
                 layers.push(PairLayer {
@@ -1076,6 +1125,124 @@ impl World {
         stats += drawn;
         Ok(stats)
     }
+    /// Readonly explicit-Body preflight for observers that advance without drawing. This is the
+    /// existing render preflight, including solar source checks; no alpha fallback for an override.
+    pub(crate) fn validate_solar_body_override(
+        &self,
+        body: &SolarBodyOverride<'_>,
+    ) -> Result<(), String> {
+        let (Some(preview), Some(mode), Some(creature)) =
+            (&self.solar_preview, &self.staged_reveal, &self.creature)
+        else {
+            return Err("capa Body alternativa requiere preview solar, etapas y criatura".into());
+        };
+        let sun = self.preview_sun(preview)?;
+        if creature.placement().center() != sun.position(self.time) {
+            return Err("capa Body alternativa: criatura no anclada al Sol".into());
+        }
+        self.validate_body_override(preview, mode, creature, body)?;
+        Ok(())
+    }
+
+    /// Preflight de la capa `Body` alternativa (sin tocar nada): particion vigente como PREFIJO exacto
+    /// de vertices, UV y normales; caras con UV y normal e indices en rango; todo finito; esfera del
+    /// apendice finita; shader de la criatura valido con la luz de este cuadro. Devuelve la esfera del
+    /// apendice EN MUNDO con el transform de dibujo vigente (el girado si hay seguimiento).
+    fn validate_body_override(
+        &self,
+        preview: &SolarPreview,
+        mode: &StagedMode,
+        creature: &StaticCreature,
+        o: &SolarBodyOverride<'_>,
+    ) -> Result<(Vec3, f64), String> {
+        let parts = mode
+            .parts
+            .as_ref()
+            .ok_or("modo por etapas sin particion de la criatura")?;
+        let (b, m) = (parts.body(), o.model);
+        let same_prefix = m.vertices.len() > b.vertices.len()
+            && m.vertices[..b.vertices.len()] == b.vertices[..]
+            && m.uvs.len() >= b.uvs.len()
+            && m.uvs[..b.uvs.len()] == b.uvs[..]
+            && m.normals.len() >= b.normals.len()
+            && m.normals[..b.normals.len()] == b.normals[..];
+        if !same_prefix {
+            return Err(
+                "capa Body alternativa: no parte de la particion vigente de la criatura (prefijo de vertices/UV/normales distinto)"
+                    .into(),
+            );
+        }
+        let finite = |v: &[f64]| v.iter().all(|c| c.is_finite());
+        if !(m.vertices[b.vertices.len()..].iter().all(|v| finite(v))
+            && m.uvs[b.uvs.len()..].iter().all(|v| finite(v))
+            && m.normals[b.normals.len()..].iter().all(|v| finite(v)))
+        {
+            return Err("capa Body alternativa: valores no finitos".into());
+        }
+        for f in &m.faces {
+            let (Some(uv), Some(n)) = (f.uv_indices, f.normal_indices) else {
+                return Err("capa Body alternativa: cara sin UV o sin normal por esquina".into());
+            };
+            if f.vertex_indices.iter().any(|&i| i >= m.vertices.len())
+                || uv.iter().any(|&i| i >= m.uvs.len())
+                || n.iter().any(|&i| i >= m.normals.len())
+            {
+                return Err("capa Body alternativa: indice fuera de rango".into());
+            }
+        }
+        let (c, r) = o.extra_bounds_obj;
+        if !(c.is_finite() && r.is_finite() && r >= 0.0) {
+            return Err("capa Body alternativa: esfera del apendice invalida".into());
+        }
+        for v in &m.vertices[b.vertices.len()..] {
+            let distance = (Vec3::from_array(*v) - c).length();
+            if !(distance.is_finite() && distance <= r) {
+                return Err("capa Body alternativa: esfera no contiene el apendice".into());
+            }
+        }
+        let transform = self
+            .turned_creature_transform(creature)
+            .unwrap_or_else(|| creature.transform());
+        let matrix = transform.matrix();
+        let center = matrix.transform_point(c);
+        let radius = r * transform.scale.x.abs();
+        if !(center.is_finite()
+            && radius.is_finite()
+            && matrix.m.iter().flatten().all(|v| v.is_finite()))
+        {
+            return Err("capa Body alternativa: transform o esfera en mundo no finitos".into());
+        }
+        let mvp = self.camera.view_projection() * matrix;
+        if !mvp.m.iter().flatten().all(|v| v.is_finite()) {
+            return Err("capa Body alternativa: matriz compuesta MVP no finita".into());
+        }
+        // La etapa de vertices usa TODAS las posiciones/normales, no solo la esfera de descarte.
+        for v in &m.vertices {
+            let v = Vec3::from_array(*v);
+            let clip = mvp.transform(v.extend(1.0));
+            if !(matrix.transform_point(v).is_finite()
+                && [clip.x, clip.y, clip.z, clip.w]
+                    .iter()
+                    .all(|v| v.is_finite()))
+            {
+                return Err("capa Body alternativa: posicion transformada no finita".into());
+            }
+        }
+        if !(m.uvs.iter().flatten().all(|v| v.is_finite())
+            && m.normals
+                .iter()
+                .all(|n| transform.transform_normal(Vec3::from_array(*n)).is_finite()))
+        {
+            return Err("capa Body alternativa: atributo transformado no finito".into());
+        }
+        let light = match preview.light {
+            SolarRevealLight::World => self.system.light_position(),
+            SolarRevealLight::Camera => self.camera.position,
+        };
+        TexturedShader::new(creature.texture(), TexturedMode::Lit, light, AMBIENT)?;
+        Ok((center, radius))
+    }
+
     /// Un cuerpo celeste exactamente como en `render` (LOD con histeresis, descarte y contadores).
     fn draw_body(
         &self,
@@ -1498,5 +1665,107 @@ fn draw_stars(fb: &mut Framebuffer, camera: &Camera) {
         let b = 0.35 + 0.65 * hash(i * 4 + 2);
         let color = to_rgb8(Vec3::new(b, b, b * (0.9 + 0.1 * hash(i * 4 + 3))));
         fb.write(x as isize, y as isize, 1.0, color);
+    }
+}
+
+// ---- GT1-CARRY (aditivo; quitar este bloque restaura World byte a byte) ----
+
+impl World {
+    /// Commit VALIDADO de la pose de una nave capturada (preview de arrastre, opt-in): posicion finita y
+    /// rotacion propia (columnas unitarias y ortogonales con 1e-9, det > 0, sin traslacion ni proyeccion).
+    /// La nave se rehace con `Ship::new` y conserva orientacion y ajustes: velocidad e inercia angular a 0.
+    /// La camara se refresca con la convencion de `update` (`desired_camera` con la base suavizada vigente,
+    /// sin `snap`); el lente, el tiempo y la criatura no cambian. Con `Err` nada cambia.
+    pub fn commit_captured_ship_pose(
+        &mut self,
+        position: Vec3,
+        orientation: Mat4,
+    ) -> Result<(), String> {
+        let m = orientation.m;
+        let cols = [0, 1, 2].map(|c| orientation.column(c));
+        let proper = position.is_finite()
+            && m.iter().flatten().all(|x| x.is_finite())
+            && m[3] == [0.0, 0.0, 0.0, 1.0]
+            && (0..3).all(|r| m[r][3] == 0.0)
+            && cols.iter().all(|c| (c.length() - 1.0).abs() <= 1e-9)
+            && cols[0].dot(cols[1]).abs() <= 1e-9
+            && cols[0].dot(cols[2]).abs() <= 1e-9
+            && cols[1].dot(cols[2]).abs() <= 1e-9
+            && cols[0].cross(cols[1]).dot(cols[2]) > 0.0;
+        if !proper {
+            return Err(
+                "pose de nave capturada no finita o no es una rotacion propia; nada cambia".into(),
+            );
+        }
+        let mut ship = Ship::new(position, -Vec3::Z);
+        ship.orientation = orientation;
+        ship.settings = self.ship.settings;
+        // Misma expresion que desired_camera, sobre el candidato: no publicar para validar.
+        let back = self.camera_basis.transform_dir(Vec3::Z);
+        let up = self.camera_basis.transform_dir(Vec3::Y);
+        let camera_position = position + back * self.chase_distance + up * self.chase_height;
+        let target = position - back * 30.0;
+        let mut camera = self.camera;
+        camera.position = camera_position;
+        camera.target = target;
+        camera.up = up;
+        let forward = target - camera_position;
+        let axes = [0, 1, 2].map(|c| self.camera_basis.column(c));
+        let unit = |v: Vec3| v.is_finite() && (v.length() - 1.0).abs() <= 1e-9;
+        let view = camera.view();
+        let vp = camera.view_projection();
+        let render = ship.transform(SHIP_MODEL_YAW).matrix();
+        let mvp = vp * render;
+        let finite = |m: &Mat4| m.m.iter().flatten().all(|x| x.is_finite());
+        let usable = camera_position.is_finite()
+            && target.is_finite()
+            && axes.iter().all(|&a| unit(a))
+            && axes[0].dot(axes[1]).abs() <= 1e-9
+            && axes[0].dot(axes[2]).abs() <= 1e-9
+            && axes[1].dot(axes[2]).abs() <= 1e-9
+            && axes[0].cross(axes[1]).dot(axes[2]) > 0.0
+            && forward.is_finite()
+            && forward.length().is_finite()
+            && forward.length() > 0.0
+            && unit(forward.normalized().cross(up).normalized())
+            && finite(&view)
+            && (0..3).all(|r| unit(Vec3::new(view.m[r][0], view.m[r][1], view.m[r][2])))
+            && finite(&vp)
+            && finite(&render)
+            && finite(&mvp)
+            && Camera::new(camera.fov_y, camera.aspect, camera.near, camera.far).is_ok()
+            && self.ship_model.vertices.iter().all(|&v| {
+                let v = Vec3::from_array(v);
+                let clip = mvp.transform(v.extend(1.0));
+                render.transform_point(v).is_finite()
+                    && [clip.x, clip.y, clip.z, clip.w]
+                        .iter()
+                        .all(|x| x.is_finite())
+            });
+        if !usable {
+            return Err("camara o composicion de la nave capturada no usable; nada cambia".into());
+        }
+        self.ship = ship;
+        self.camera = camera;
+        Ok(())
+    }
+}
+
+// ---- GT3-AUTO (aditivo; quitar este bloque restaura el aprobado173 byte a byte) ----
+
+impl World {
+    /// `update_creature_eye_follow` con el CUERPO INMOVIL (GT3, cierre de la captura automatica): el ojo
+    /// persigue su objetivo con los segundos reales como siempre, pero ni el giro global ni el seguimiento
+    /// horizontal avanzan: su estado (yaw, objetivo, rapidez, activo) se conserva EXACTO, sin reinicio, y
+    /// `update_creature_eye_follow` lo continua despues desde ese mismo estado. No toca nave, camara,
+    /// tiempo, O2 ni revelacion. Sin mirada o sin criatura no hace nada.
+    pub fn update_creature_eye_follow_body_held(&mut self, elapsed_seconds: f64) {
+        let target = self.eye_target();
+        if let (Some(target), Some(eye)) = (
+            target,
+            self.staged_reveal.as_mut().and_then(|m| m.eye.as_mut()),
+        ) {
+            eye.follow.update(target, elapsed_seconds);
+        }
     }
 }

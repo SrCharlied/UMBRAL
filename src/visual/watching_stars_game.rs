@@ -7,7 +7,7 @@ use crate::{
         framebuffer::{Framebuffer, MAX_PIXELS},
         stats::RenderStats,
     },
-    scene::world::World,
+    scene::world::{SolarBodyOverride, World},
     visual::{
         lucid_game::LucidSurfaceRequest,
         solar_game::SolarGame,
@@ -94,11 +94,29 @@ pub fn render_game_frame(
     solar: Option<&SolarGame>,
     watching_stars: bool,
 ) -> Result<GameFrame, String> {
+    render_game_frame_with(world, framebuffer, solar, watching_stars, None)
+}
+
+/// `render_game_frame` con una capa `Body` alternativa opcional para el Sol con ojo (debug opt-in de
+/// la composicion del tentaculo). `None` es exactamente `render_game_frame`. La capa entra en la
+/// escena (compositor solar) ANTES de los ojos de las estrellas, que asi se ocluyen con su
+/// profundidad; overlays y percepcion siguen despues, en el bucle. Sin Sol con ojo, `Err` antes de
+/// tocar el cuadro (no hay capa `Body` que sustituir).
+pub fn render_game_frame_with(
+    world: &World,
+    framebuffer: &mut Framebuffer,
+    solar: Option<&SolarGame>,
+    watching_stars: bool,
+    body: Option<&SolarBodyOverride<'_>>,
+) -> Result<GameFrame, String> {
+    if body.is_some() && solar.is_none() {
+        return Err("la capa Body alternativa solo existe en el Sol con ojo".into());
+    }
     if watching_stars {
         preflight_watching_stars(framebuffer, world)?;
     }
     let stats = match solar {
-        Some(game) => game.render(world, framebuffer)?,
+        Some(game) => game.render_with(world, framebuffer, body)?,
         None => world.render(framebuffer),
     };
     let watching_stars = if watching_stars {

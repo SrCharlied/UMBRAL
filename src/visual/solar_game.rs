@@ -6,7 +6,7 @@
 
 use crate::{
     renderer::{framebuffer::Framebuffer, stats::RenderStats},
-    scene::world::World,
+    scene::world::{SolarBodyOverride, World},
     visual::{
         creature_eye_comparison::EyeTarget,
         creature_eye_follow::EyeFollowSettings,
@@ -168,6 +168,16 @@ impl SolarGame {
     /// headless y cada cuadro del bucle); con el ojo oculto es exactamente `World::render`.
     pub fn render(&self, world: &World, fb: &mut Framebuffer) -> Result<RenderStats, String> {
         world.render_solar_reveal_preview(fb)
+    }
+    /// `render` con una capa `Body` alternativa opcional (debug opt-in de la composicion del
+    /// tentaculo; `None` es exactamente `render`). Ver `World::render_solar_reveal_preview_with`.
+    pub fn render_with(
+        &self,
+        world: &World,
+        fb: &mut Framebuffer,
+        body: Option<&SolarBodyOverride<'_>>,
+    ) -> Result<RenderStats, String> {
+        world.render_solar_reveal_preview_with(fb, body)
     }
     /// Teclas del cuadro en orden `R`, `7`, `8`, `H`, `G`. Las vistas usan la pose del preview,
     /// que salta la revelacion y la mirada al objetivo; el seguimiento conserva su giro y lo

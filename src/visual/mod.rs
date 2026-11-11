@@ -15,6 +15,17 @@ pub mod solar_reveal_preview;
 pub mod staged_creature_reveal;
 pub mod static_creature;
 pub mod surface_placement;
+pub mod tentacle_auto_capture;
+pub mod tentacle_grasp_carry;
+pub mod tentacle_grasp_closure;
+pub mod tentacle_grasp_handoff;
+pub mod tentacle_grasp_preview;
+pub mod tentacle_grasp_transition;
+#[allow(dead_code)]
+pub mod tentacle_growth_cpu;
+pub mod tentacle_live_pursuit;
+pub mod tentacle_solar_game;
+pub mod tentacle_spatial_pursuit;
 pub mod textured;
 pub mod void_game;
 pub mod watching_stars;
