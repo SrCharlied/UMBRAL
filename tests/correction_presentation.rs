@@ -165,6 +165,7 @@ fn correction03_shared_composer_keeps_feedback_opt_in_and_perception_last() {
         preset: CreaturePreset::Far,
         gameplay_feedback,
         perception,
+        ending: None,
     };
     let scene = |w: &World| {
         let mut fb = Framebuffer::new(320, 180, umbral::scene::world::SPACE_COLOR).unwrap();

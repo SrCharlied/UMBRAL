@@ -1,6 +1,6 @@
 # Distribución y anclaje procedural sobre esfera (UMB-304 y UMB-305)
 
-**Estado:** primera implementación, propietaria Persona 3. Código en `src/visual/procedural_surface.rs`, pruebas en `tests/procedural.rs`, vista técnica en `examples/procedural_surface.rs`. **No está integrada en la escena del juego**: ningún planeta, prop, shader, cámara ni control cambia con este trabajo. La orientación y el anclaje de props (UMB-305) están en la sección «Orientación y anclaje (UMB-305)», también sin integrar.
+**Estado:** propietaria Persona 3. Código en `src/visual/procedural_surface.rs`, pruebas en `tests/procedural.rs`, vista técnica en `examples/procedural_surface.rs`. La orientación y el anclaje de props (UMB-305) están en la sección «Orientación y anclaje (UMB-305)». **Ambas APIs ya están integradas en la escena del juego** mediante `src/visual/planet_props.rs`; ver la sección «Integración en el mundo jugable».
 
 ## Qué produce
 
@@ -185,10 +185,43 @@ Escribe `renders/smoke/surface_placement_<angulo>.png` (1280×720), salvo que se
 
 Las dos capturas usan la misma semilla y los mismos anclajes. Lo único que cambia es la `Transform` del planeta. **Es una vista técnica:** los marcadores no son props definitivos ni la esfera es un planeta aprobado.
 
+## Integración en el mundo jugable
+
+**Código:** `src/visual/planet_props.rs` (contenido y mallas), `World::draw_planet_props` en `src/scene/world.rs` (dibujo). **Pruebas:** `tests/ending_and_props.rs`. **Vista:** `cargo run --release --example ending_and_props`, que escribe `renders/smoke/props_<planeta>.png`.
+
+### Qué lleva cada planeta
+
+| Planeta | Capa principal | Relleno | Semillas |
+|---|---|---|---|
+| Antena (r 14) | Hasta 22 **mástiles** con travesaño, parábola inclinada y baliza roja; escala 0.15–0.21 | Hasta 40 rocas gris pardo, 0.035–0.07 | `0x0A17E0A1` / `0x0A17E0A2` |
+| Osario (r 9) | Hasta 20 grupos de tres **costillas** curvas color hueso; escala 0.20–0.28 | Hasta 28 rocas ocre, 0.04–0.08 | `0x05A10B01` / `0x05A10B02` |
+| Vigilia (r 20) | Hasta 30 racimos de **cristales** hexagonales azul pálido; escala 0.11–0.18 | Hasta 30 rocas azul pizarra, 0.03–0.06 | `0x0F1611A1` / `0x0F1611A2` |
+| Sol | Ninguno | — | — |
+
+Los parámetros de distribución (`attempts`, `noise_scale`, `threshold`, `min_spacing`) están en `layers_for`. El giro (0–2π) y la escala de cada prop se derivan de forma determinista de la semilla de su capa y del `attempt` de la muestra. Las escalas están en radios del planeta, como define `PropPlacement`. Los pivotes se hunden entre 0.004 y 0.012 radios para que la base no flote.
+
+Las mallas se generan por código: piezas convexas con las caras orientadas hacia fuera (CCW), así que el descarte de caras traseras funciona. No hay OBJ nuevos.
+
+### Cómo se dibuja
+
+1. **Una vez** (`World::new`), `build_system_props` llama a `distribute` por capa y crea un `SurfaceAnchor` por muestra. El reinicio de partida no los recrea. Al dibujar, el contenido se busca por el **nombre** del cuerpo y no por su índice, así que un sistema con cuerpos quitados (como hacen algunas pruebas al retirar el Sol) no pone props en otro planeta.
+2. **Cada cuadro**, para cada cuerpo, antes de su esfera:
+   - Si el interruptor `F2` (`DebugToggles::planet_props`) está apagado, o si el LOD del cuerpo es el más grueso (planeta lejano), no se dibuja nada.
+   - Se descarta el conjunto con la esfera del planeta ampliada por `max_reach`, la altura máxima de sus props.
+   - Cada prop toma su pose con `SurfaceAnchor::world_transform(&body.transform(t))` y se descarta por separado con la esfera envolvente de su malla.
+   - Se dibuja con `LitPlanet`, los colores del modelo y ambiente 0.06.
+3. **Sombra del planeta:** `LitPlanet` no conoce la oclusión, así que un prop de la cara nocturna aparecería iluminado. `prop_light_position` usa el terminador del suelo (`PROP_TERMINATOR = (-0.08, 0.3)` sobre `normal · dirección al Sol`) e inclina la luz del prop hacia `-normal` en la noche. No cambia el renderer ni `ShaderContext`, solo la copia del contexto que recibe cada prop.
+4. **Contadores:** los props son parte del cuerpo lógico. Suman triángulos, vértices y fragmentos, pero no `objects_submitted` ni `objects_culled`, de modo que las pruebas de conteo de objetos («Sol, 3 planetas y nave») siguen siendo válidas.
+
+### Límites
+
+- **Decorativos:** no colisionan, porque la navegación usa la esfera del cuerpo. Una prueba garantiza que su altura máxima queda por debajo de cada baliza menos el radio de recolección.
+- **Sombra aproximada:** la luz inclinada apaga las caras que miran al Sol, pero no hay sombras proyectadas entre props ni del prop sobre el suelo.
+- **Rutas con shader propio:** con `--lucid-surface` o `--void-eye` cambia el shader de los planetas, pero los props siguen con `LitPlanet`.
+- **Rendimiento:** medido con `examples/ending_and_props.rs` en release, 1280×720, junto a cada planeta y con props activados/desactivados. Antena 11.3/9.9 ms, Osario 8.2/7.0 ms, Vigilia 13.7/12.1 ms por cuadro (unos 10 200 triángulos enviados de más con los tres planetas en LOD cercano). Es una medición puntual en una sola máquina, no un benchmark.
+
 ## Pendiente
 
 - **Unificar con Persona 1 (propuesta, no aplicada):** `world_transform` ya no depende de la banda de `to_euler`, porque usa el helper privado `euler_yxz`. Si Persona 1 adopta el mismo método en `Mat4::to_euler` (retirar la guiñada y leer cabeceo y alabeo del resto), el helper puede eliminarse y el diagnóstico de banda debe actualizarse. Lo decide su propietaria.
-- **Integración en la escena:** asignar props por planeta y elegir giros, elevaciones y escalas. Los props reales y su modelo no forman parte de este trabajo.
-- **Integración de la distribución:** qué planetas usan qué semilla y parámetros, radio real y densidad visual. Es decisión de Persona 3 con revisión de Persona 1 para el renderer.
-- **Rendimiento:** no medido dentro de la escena. Generar una vez por planeta, no por cuadro.
-- **Posibles mejoras, solo si hacen falta:** varias octavas de ruido, o una retícula espacial para el espaciado si se sube `MAX_ATTEMPTS`.
+- **Revisión visual del contenido:** las mallas y los parámetros de cada planeta son una primera propuesta de integración. Falta la aprobación artística de Persona 3 y la revisión del renderer de Persona 1.
+- **Posibles mejoras, solo si hacen falta:** varias octavas de ruido, una retícula espacial para el espaciado si se sube `MAX_ATTEMPTS`, o una sombra real en el shader si el contexto llega a incluir el centro del cuerpo.

@@ -49,6 +49,7 @@ fn configured(output: PathBuf) -> ConfiguredGameOptions {
         },
         gameplay_feedback: true,
         oxygen_source: OxygenSource::Debug,
+        oxygen_seconds: None,
     }
 }
 fn run(o: ConfiguredGameOptions, replay: Option<PathBuf>) -> Result<(), String> {

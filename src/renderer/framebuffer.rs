@@ -50,6 +50,18 @@ impl Framebuffer {
             false
         }
     }
+    /// Color y profundidad de la fila `y` (para rasterizar por filas). `y < height`.
+    pub(crate) fn row_mut(&mut self, y: usize) -> (&mut [u32], &mut [f64]) {
+        let range = y * self.width..(y + 1) * self.width;
+        (&mut self.pixels[range.clone()], &mut self.depth[range])
+    }
+    /// Todas las filas de color y profundidad, de arriba abajo, como prestamos disjuntos (para
+    /// repartirlas entre hilos).
+    pub(crate) fn rows_mut(&mut self) -> impl Iterator<Item = (&mut [u32], &mut [f64])> {
+        self.pixels
+            .chunks_mut(self.width)
+            .zip(self.depth.chunks_mut(self.width))
+    }
     /// Verdadero si un fragmento a esta profundidad ganaria el z-test (sin escribir).
     pub fn depth_passes(&self, x: isize, y: isize, depth: f64) -> bool {
         x >= 0

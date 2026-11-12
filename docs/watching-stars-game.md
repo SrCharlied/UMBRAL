@@ -54,6 +54,13 @@ escena real (World::render, o SolarGame::render en el Sol con ojo)
 
 ## Estado y controles
 
+> **Actualización (integración con el gameplay de Persona 2):** sin `--debug-oxygen`, el objetivo
+> de O₂ es el **oxígeno real** de `GameplayState`, que se consume solo. Por eso los ojos aparecen
+> en partida normal cuando el O₂ mostrado baja de 65 %: hacia los 147 s con el tanque de 420 s, o
+> antes con `--oxygen-seconds S` o la tecla `L` (ver README, «Oxígeno para demostraciones»).
+> `tests/oxygen_pace.rs` lo verifica de extremo a extremo sin teclas. Lo que sigue describe el
+> modo manual (`1`–`4`, `M`/`N`), que sigue disponible como override visual.
+
 - Se reutilizan `OxygenTransition` y `app::advance_perception_frame`: `1`–`4` y `M`/`N` cambian
   el objetivo, y el O₂ mostrado lo sigue a 0,25 por segundo real, simétrico al bajar y al
   recuperar, llega exactamente (también a 0) y nada lo consume solo. El O₂ inicial es exactamente

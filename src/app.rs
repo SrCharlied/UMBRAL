@@ -28,6 +28,9 @@ use crate::{
         },
         creature_reveal::{RevealSettings, step_debug_oxygen, validate_reveal_flags},
         creature_viewer::validate_output_path,
+        ending::{
+            EndingClock, EndingKind, EndingSummary, FULLY_SHOWN as ENDING_FULLY_SHOWN, draw_ending,
+        },
         lucid_game::set_lucid_surface,
         perception_game::{
             OXYGEN_TRANSITION_RATE, OxygenKeys, OxygenTransition, apply_lucid_perception,
@@ -94,6 +97,44 @@ pub struct ConfiguredGameOptions {
     pub options: GameOptions,
     pub gameplay_feedback: bool,
     pub oxygen_source: OxygenSource,
+    /// Segundos que dura el tanque completo de oxigeno real (`--oxygen-seconds`); `None` deja
+    /// el valor de `GameplaySettings` (420 s).
+    pub oxygen_seconds: Option<f64>,
+}
+
+/// Ritmos de consumo que alterna la tecla `L`: segundos para vaciar el tanque completo.
+/// 420 s es el juego normal; los demas sirven para demostrar muerte, percepcion y ojos.
+pub const OXYGEN_PACE_SECONDS: [f64; 4] = [420.0, 120.0, 60.0, 30.0];
+
+/// Segundos que dura el tanque completo con el consumo actual (`inf` si no se consume).
+pub fn oxygen_tank_seconds(world: &World) -> f64 {
+    1.0 / world.gameplay.settings.drain_per_second
+}
+
+/// Fija la duracion del tanque completo (segundos finitos > 0). Conserva el oxigeno actual:
+/// solo cambia la velocidad a partir de ahora. `Shift+R` conserva este ajuste.
+pub fn set_oxygen_tank_seconds(world: &mut World, seconds: f64) -> Result<(), String> {
+    if !(seconds.is_finite() && seconds > 0.0) {
+        return Err(format!(
+            "duracion del oxigeno invalida (segundos finitos > 0): {seconds}"
+        ));
+    }
+    world.gameplay.settings.drain_per_second = 1.0 / seconds;
+    Ok(())
+}
+
+/// Tecla `L`: pasa al siguiente ritmo mas rapido de `OXYGEN_PACE_SECONDS` y, tras el mas
+/// rapido (o desde un valor fuera de la lista), vuelve al normal. Devuelve los segundos fijados.
+pub fn cycle_oxygen_pace(world: &mut World) -> f64 {
+    let current = oxygen_tank_seconds(world);
+    let next = OXYGEN_PACE_SECONDS
+        .iter()
+        .position(|&s| (s - current).abs() < 1e-6)
+        .and_then(|i| OXYGEN_PACE_SECONDS.get(i + 1))
+        .copied()
+        .unwrap_or(OXYGEN_PACE_SECONDS[0]);
+    world.gameplay.settings.drain_per_second = 1.0 / next;
+    next
 }
 impl std::ops::Deref for ConfiguredGameOptions {
     type Target = GameOptions;
@@ -107,6 +148,7 @@ impl From<GameOptions> for ConfiguredGameOptions {
             options,
             gameplay_feedback: false,
             oxygen_source: OxygenSource::Legacy,
+            oxygen_seconds: None,
         }
     }
 }
@@ -444,6 +486,9 @@ pub struct PresentationLayers<'a> {
     pub preset: CreaturePreset,
     /// Franja tecnica de Persona 2: OPCIONAL (`--gameplay-feedback`), nunca por defecto.
     pub gameplay_feedback: bool,
+    /// Presentacion final: segundos reales desde victoria o muerte (`EndingClock`); `None`
+    /// mientras la partida sigue. Es la ultima capa: va sobre todo lo demas.
+    pub ending: Option<f64>,
     /// Percepcion lucida: ultimo paso de color (con O2 0 no queda texto brillante).
     pub perception: bool,
 }
@@ -472,6 +517,11 @@ pub fn compose_presentation(
     }
     if layers.perception {
         apply_lucid_perception(framebuffer, world)?;
+    }
+    if let Some(seconds) = layers.ending
+        && let Some(summary) = EndingSummary::from_gameplay(&world.gameplay, world.time)
+    {
+        draw_ending(framebuffer, &summary, seconds);
     }
     Ok(())
 }
@@ -2024,6 +2074,10 @@ fn run_with_tentacle_io(
         OxygenSource::Real => world.clear_debug_oxygen(),
         OxygenSource::Legacy => world.debug_oxygen01 = options.debug_oxygen,
     }
+    if let Some(seconds) = options.oxygen_seconds {
+        set_oxygen_tank_seconds(&mut world, seconds)?;
+        println!("Oxigeno: el tanque completo dura {seconds:.0} s (L alterna 420/120/60/30 s)");
+    }
     world.toggles.frustum_culling = options.culling;
     world.toggles.lod = options.lod;
     if lucid {
@@ -2412,6 +2466,8 @@ fn run_with_tentacle_io(
     }
     let mut show_overlay = options.overlay;
     if options.headless {
+        // Un solo cuadro: si la partida ya termino, el final se muestra completo.
+        let ending_seconds = EndingKind::of(&world.gameplay).map(|_| ENDING_FULLY_SHOWN);
         let lines = show_overlay.then(|| {
             overlay_lines(
                 None,
@@ -2433,6 +2489,7 @@ fn run_with_tentacle_io(
                 preset: last_preset,
                 gameplay_feedback: options.gameplay_feedback,
                 perception,
+                ending: ending_seconds,
             },
         )?;
         if let Some(guard) = &output_guard {
@@ -2456,6 +2513,7 @@ fn run_with_tentacle_io(
     };
     let mut fps = 60.0;
     let (mut frames, mut title_clock, mut title_frames) = (0usize, 0.0, 0u32);
+    let mut ending_clock = EndingClock::new();
     while io.is_open() && !io.down(Key::Escape) {
         let elapsed = io.elapsed();
         // Limitar dt evita saltos enormes tras arrastrar la ventana o pausar el proceso.
@@ -2501,6 +2559,13 @@ fn run_with_tentacle_io(
         }
         if io.pressed(Key::F1) {
             show_overlay ^= true;
+        }
+        if io.pressed(Key::L) {
+            let seconds = cycle_oxygen_pace(&mut world);
+            println!("L: el tanque completo de oxigeno dura ahora {seconds:.0} s");
+        }
+        if io.pressed(Key::F2) {
+            world.toggles.planet_props ^= true;
         }
         if io.pressed(Key::F6) {
             world.toggles.backface_culling ^= true;
@@ -2588,6 +2653,9 @@ fn run_with_tentacle_io(
         }
         // Terminal: relojes de efecto congelados hasta Shift+R (composicion y persecucion no avanzan).
         let terminal = world.gameplay.game_over || world.gameplay.objective_complete;
+        // Presentacion final: segundos REALES desde la victoria o la muerte; Shift+R lo reinicia.
+        ending_clock.update(&world.gameplay, elapsed);
+        let ending_seconds = ending_clock.seconds();
         if let Some(debug) = capture.as_mut() {
             // Reloj propio con segundos REALES; F7 toma la instantanea tras la fisica del cuadro.
             if !terminal {
@@ -2669,6 +2737,7 @@ fn run_with_tentacle_io(
                 preset: last_preset,
                 gameplay_feedback: options.gameplay_feedback,
                 perception,
+                ending: ending_seconds,
             },
         )?;
         if io.pressed(Key::P) {
@@ -2701,9 +2770,11 @@ fn run_with_tentacle_io(
                 .or_else(|| auto.as_ref().map(|a| a.title()))
                 .map_or(String::new(), |t| format!(" | {t}{capture_note}"));
             io.set_title(&format!(
-                "UMBRAL | {:.0} FPS | v {:.0} u/s | culling {} | LOD {} | tri {} desc {} ras {} | frag {}{solar_status}{perception_status}{capture_status}",
+                "UMBRAL | {:.0} FPS | v {:.0} u/s | O2 real {:.0}% (tanque {:.0} s, L) | culling {} | LOD {} | tri {} desc {} ras {} | frag {}{solar_status}{perception_status}{capture_status}",
                 f64::from(title_frames) / title_clock,
                 world.ship.speed,
+                world.gameplay.oxygen01 * 100.0,
+                oxygen_tank_seconds(&world),
                 if world.toggles.frustum_culling {
                     "ON"
                 } else {

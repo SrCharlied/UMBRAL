@@ -32,6 +32,7 @@ use crate::{
             target_azimuth,
         },
         creature_reveal::{CreatureReveal, RevealCompositor, RevealPart, RevealSettings},
+        planet_props::{PlanetProps, build_system_props, prop_light_position},
         solar_reveal_preview::{
             PairLayer, PairLayerKind, SolarPairCompositor, SolarRevealAlphas, SolarRevealLight,
             solar_reveal_alphas,
@@ -65,6 +66,8 @@ pub struct DebugToggles {
     pub freeze_orbits: bool,
     pub lod: bool,
     pub backface_culling: bool,
+    /// Props procedurales sobre los planetas (F2).
+    pub planet_props: bool,
 }
 
 impl Default for DebugToggles {
@@ -74,6 +77,7 @@ impl Default for DebugToggles {
             freeze_orbits: false,
             lod: true,
             backface_culling: true,
+            planet_props: true,
         }
     }
 }
@@ -91,6 +95,8 @@ pub struct World {
     pub ship_model: Model,
     /// Esferas de mas a menos detalle; ver `LOD_MIN_RATIO` y `World::lod_level`.
     pub sphere_lods: Vec<Model>,
+    /// Props procedurales por cuerpo con sus anclajes persistentes (`visual::planet_props`).
+    pub planet_props: Vec<Option<PlanetProps>>,
     /// Ultimo nivel elegido por cuerpo; da histeresis para que no parpadee en el limite.
     body_lod: Vec<Cell<usize>>,
     /// Segundos simulados; avanza con `dt` salvo que las orbitas esten congeladas.
@@ -205,6 +211,7 @@ impl World {
             visual_transition_owned: false,
             restart_generation: 0,
             system: SolarSystem::demo(),
+            planet_props: build_system_props(&SolarSystem::demo())?,
             ship,
             camera: Camera::new(BASE_FOV, aspect, 0.3, 6000.0)?,
             ship_model,
@@ -1408,6 +1415,95 @@ impl World {
         Ok((center, radius))
     }
 
+    /// Props procedurales del cuerpo `index`: cada uno con `SurfaceAnchor::world_transform` sobre
+    /// la `Transform` actual del cuerpo y su luz sombreada por el planeta (`prop_light_position`).
+    /// Forman parte del cuerpo logico: no suman `objects_submitted` ni `objects_culled`, solo sus
+    /// triangulos y fragmentos. Se omiten en el nivel de detalle mas grueso (planeta lejano, props
+    /// de pocos pixeles) y con el interruptor F2 apagado.
+    fn draw_planet_props(
+        &self,
+        fb: &mut Framebuffer,
+        body_name: &str,
+        transform: &Transform,
+        level: usize,
+        context: &ShaderContext,
+        frustum: &Frustum,
+    ) -> RenderStats {
+        let mut stats = RenderStats::default();
+        let Some(content) = self
+            .planet_props
+            .iter()
+            .flatten()
+            .find(|content| content.body == body_name)
+        else {
+            return stats;
+        };
+        if !self.toggles.planet_props || level + 1 >= LOD_RESOLUTIONS.len() {
+            return stats;
+        }
+        let radius = transform.scale.x.abs();
+        let culled = |stats: &mut RenderStats, faces: usize| {
+            stats.triangles_submitted += faces;
+            stats.triangles_culled += faces;
+        };
+        // Descarte del conjunto: la esfera del planeta mas la altura maxima de sus props.
+        if self.toggles.frustum_culling
+            && !frustum.sphere_visible(transform.position, radius * (1.0 + content.max_reach))
+        {
+            for prop in &content.props {
+                culled(&mut stats, content.meshes[prop.mesh].faces.len());
+            }
+            return stats;
+        }
+        let planet = transform.matrix();
+        let material = Material {
+            ambient: 0.06,
+            cull_backfaces: self.toggles.backface_culling,
+            ..Material::from_model()
+        };
+        for prop in &content.props {
+            let mesh = &content.meshes[prop.mesh];
+            // Validado en `World::new` con el mismo tipo de transform; un `Err` aqui solo
+            // podria venir de un planeta degenerado y entonces el prop no se dibuja.
+            let Ok(pose) = prop.anchor.world_transform(transform) else {
+                continue;
+            };
+            let scale = pose.scale.x.abs();
+            let center = pose
+                .matrix()
+                .transform_point(Vec3::from_array(mesh.bounds_center));
+            if self.toggles.frustum_culling
+                && !frustum.sphere_visible(center, mesh.bounds_radius * scale)
+            {
+                culled(&mut stats, mesh.faces.len());
+                continue;
+            }
+            let normal = planet.transform_dir(prop.normal).normalized();
+            let lit = ShaderContext {
+                light_position: prop_light_position(
+                    context.light_position,
+                    transform.position,
+                    normal,
+                    pose.position,
+                ),
+                ..*context
+            };
+            stats += RenderStats {
+                objects_submitted: 0,
+                ..draw_model(
+                    fb,
+                    mesh,
+                    &pose,
+                    &material,
+                    ShaderKind::LitPlanet,
+                    &lit,
+                    &self.camera,
+                )
+            };
+        }
+        stats
+    }
+
     /// Un cuerpo celeste exactamente como en `render` (LOD con histeresis, descarte y contadores).
     fn draw_body(
         &self,
@@ -1425,6 +1521,7 @@ impl World {
             body.body_radius,
             (transform.position - self.camera.position).length(),
         );
+        stats += self.draw_planet_props(fb, body.name, &transform, level, context, frustum);
         let sphere = &self.sphere_lods[level];
         let radius = sphere.bounds_radius * body.body_radius;
         if self.toggles.frustum_culling && !frustum.sphere_visible(transform.position, radius) {
@@ -1549,6 +1646,7 @@ impl World {
                 body.body_radius,
                 (transform.position - self.camera.position).length(),
             );
+            stats += self.draw_planet_props(fb, body.name, &transform, level, &context, &frustum);
             let sphere = &self.sphere_lods[level];
             let radius = sphere.bounds_radius * body.body_radius;
             if self.toggles.frustum_culling && !frustum.sphere_visible(transform.position, radius) {

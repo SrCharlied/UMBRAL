@@ -38,6 +38,11 @@ use umbral::{
     },
 };
 
+/// Duracion del tanque de oxigeno con la experiencia completa por defecto (ventana sin
+/// `--classic` ni `--oxygen-seconds`): ojos hacia los 42 s, percepcion a los 60 s y muerte a
+/// los 120 s. `L` sigue alternando 420/120/60/30 s.
+const DEFAULT_GAME_OXYGEN_SECONDS: f64 = 120.0;
+
 fn positive_argument(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<usize, String> {
     let value = args
         .next()
@@ -67,6 +72,8 @@ fn run() -> Result<(), String> {
     let mut void_eye = false;
     let mut lucid_perception = false;
     let mut watching_stars = false;
+    let mut oxygen_seconds: Option<f64> = None;
+    let mut classic = false;
     let mut capture_flags = TentacleCaptureFlags::default();
     let mut live_pursuit = false;
     let mut spatial_pursuit = false;
@@ -122,6 +129,7 @@ fn run() -> Result<(), String> {
             "--void-eye" => void_eye = true,
             "--lucid-perception" => lucid_perception = true,
             "--watching-stars" => watching_stars = true,
+            "--classic" => classic = true,
             "--tentacle-capture-debug" => capture_flags.enabled = true,
             "--tentacle-live-pursuit" => live_pursuit = true,
             "--tentacle-spatial-pursuit" => spatial_pursuit = true,
@@ -165,12 +173,20 @@ fn run() -> Result<(), String> {
                         .ok_or("Falta el valor despues de --debug-oxygen")?,
                 )?)
             }
+            "--oxygen-seconds" => {
+                oxygen_seconds = Some(
+                    args.next()
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .filter(|s| s.is_finite() && *s > 0.0)
+                        .ok_or("--oxygen-seconds necesita segundos finitos > 0")?,
+                )
+            }
             "--frames" => frame_limit = Some(positive_argument(&mut args, "--frames")?),
             "--width" => width = positive_argument(&mut args, "--width")?,
             "--height" => height = positive_argument(&mut args, "--height")?,
             "--help" | "-h" => {
                 println!(
-                    "cargo run --release -- [--headless] [--output archivo.png] [--frames N] [--width N] [--height N]\nResolucion por defecto: {DEFAULT_WIDTH}x{DEFAULT_HEIGHT} (maximo {MAX_PIXELS} pixeles)\nA/D o flechas: rotar | R: restablecer | P: guardar PNG | Esc: salir\nCriatura estatica (debug, opt-in): --creature-model modelo.obj --creature-texture textura.png (siempre juntos) [--near-creature: arrancar frente a ella; R vuelve ahi]. Los flags de criatura son incompatibles con --legacy; solo el arranque --near-creature es incompatible con --near. Con criatura, --output debe ser .png y distinto de las entradas\nRevelacion por oxigeno (debug, opt-in): --creature-reveal (requiere la criatura; no mueve la nave) | --debug-oxygen X: oxigeno de depuracion inicial en [0, 1] (por defecto 1); teclas 1-4: 100/50/25/5 %\nRevelacion por etapas (debug, opt-in): --creature-reveal-stages (requiere la criatura; incompatible con --creature-reveal; no mueve la nave): primero el ojo y despues el cuerpo\nMirada local (debug, opt-in): --creature-eye-follow (requiere --creature-reveal-stages): el ojo mira a la nave dentro de sus limites; cuerpo y tentaculos quietos\nComparacion de la mirada (debug, opt-in): --creature-eye-compare (requiere --creature-eye-follow): arranca mirando a la camara; G alterna NAVE/CAMARA; panel inferior\nGiro global lejano (candidata, debug, opt-in): --creature-distant-turn (requiere --creature-eye-compare): de lejos la criatura entera gira lenta y limitada (20/12 grados, t95 8 s) hacia el punto de G; de cerca solo el ojo. Arranca LEJOS; H giro ON/OFF, 7 CERCA, 8 LEJOS, R repite el preset\nSeguimiento horizontal (candidata 02, debug, opt-in): --creature-horizontal-follow (requiere --creature-eye-compare; no con --creature-distant-turn): cerca y lejos el cuerpo entero gira solo en horizontal, lento (t95 4 s, tope 18 grados/s), hacia el punto de G en cualquier lado. Arranca LEJOS; H seguimiento ON/OFF (OFF vuelve al frente), 7 CERCA, 8 LEJOS, R repite el preset\nSol con ojo (composicion aprobada 03, opt-in): --creature-solar-reveal (requiere --creature-model y --creature-texture; implica etapas, mirada, comparacion y seguimiento horizontal 02, que pueden repetirse; no con --legacy, --creature-reveal, --near, --near-creature ni --creature-distant-turn): la criatura en el centro del Sol (radio 80, yaw 0), mirada a la camara y luz de camara; arranca FRONTAL. 7 FRONTAL, 8 OBLICUA, R vuelve a FRONTAL, H seguimiento ON/OFF, G CAMARA/NAVE, 1-4 y M/N el O2 (titulo de la ventana)
+                    "cargo run --release -- [--headless] [--output archivo.png] [--frames N] [--width N] [--height N] [--oxygen-seconds S] [--classic]\nPor defecto, en ventana: estrellas observadoras + percepcion + superficie lucida + ojo del vacio y tanque de 120 s. --classic (o --headless) usa el juego sin esos efectos y el tanque de 420 s\nOxigeno: --oxygen-seconds S fija cuantos segundos dura el tanque completo (por defecto 420); en juego, L alterna 420/120/60/30 s\nResolucion por defecto: {DEFAULT_WIDTH}x{DEFAULT_HEIGHT} (maximo {MAX_PIXELS} pixeles)\nA/D o flechas: rotar | R: restablecer | P: guardar PNG | Esc: salir\nCriatura estatica (debug, opt-in): --creature-model modelo.obj --creature-texture textura.png (siempre juntos) [--near-creature: arrancar frente a ella; R vuelve ahi]. Los flags de criatura son incompatibles con --legacy; solo el arranque --near-creature es incompatible con --near. Con criatura, --output debe ser .png y distinto de las entradas\nRevelacion por oxigeno (debug, opt-in): --creature-reveal (requiere la criatura; no mueve la nave) | --debug-oxygen X: oxigeno de depuracion inicial en [0, 1] (por defecto 1); teclas 1-4: 100/50/25/5 %\nRevelacion por etapas (debug, opt-in): --creature-reveal-stages (requiere la criatura; incompatible con --creature-reveal; no mueve la nave): primero el ojo y despues el cuerpo\nMirada local (debug, opt-in): --creature-eye-follow (requiere --creature-reveal-stages): el ojo mira a la nave dentro de sus limites; cuerpo y tentaculos quietos\nComparacion de la mirada (debug, opt-in): --creature-eye-compare (requiere --creature-eye-follow): arranca mirando a la camara; G alterna NAVE/CAMARA; panel inferior\nGiro global lejano (candidata, debug, opt-in): --creature-distant-turn (requiere --creature-eye-compare): de lejos la criatura entera gira lenta y limitada (20/12 grados, t95 8 s) hacia el punto de G; de cerca solo el ojo. Arranca LEJOS; H giro ON/OFF, 7 CERCA, 8 LEJOS, R repite el preset\nSeguimiento horizontal (candidata 02, debug, opt-in): --creature-horizontal-follow (requiere --creature-eye-compare; no con --creature-distant-turn): cerca y lejos el cuerpo entero gira solo en horizontal, lento (t95 4 s, tope 18 grados/s), hacia el punto de G en cualquier lado. Arranca LEJOS; H seguimiento ON/OFF (OFF vuelve al frente), 7 CERCA, 8 LEJOS, R repite el preset\nSol con ojo (composicion aprobada 03, opt-in): --creature-solar-reveal (requiere --creature-model y --creature-texture; implica etapas, mirada, comparacion y seguimiento horizontal 02, que pueden repetirse; no con --legacy, --creature-reveal, --near, --near-creature ni --creature-distant-turn): la criatura en el centro del Sol (radio 80, yaw 0), mirada a la camara y luz de camara; arranca FRONTAL. 7 FRONTAL, 8 OBLICUA, R vuelve a FRONTAL, H seguimiento ON/OFF, G CAMARA/NAVE, 1-4 y M/N el O2 (titulo de la ventana)
 Superficie lucida (aprobada 02, opt-in): --lucid-surface: el planeta Antena existente usa la superficie lucida (grietas rojo-ambar bajo 50 % de O2; con O2 >= 50 % el cuadro es el de siempre); mismo material, radio, orbita y rotacion. Con el juego normal (--near 1 arranca junto a Antena; admite la criatura estatica y su revelacion) o con --creature-solar-reveal; no con --legacy ni, fuera del Sol con ojo, con --creature-eye-compare, --creature-distant-turn o --creature-horizontal-follow. 1-4 y M/N cambian el O2
 Ojo del vacio (aprobado 02, opt-in): --void-eye: el planeta Vigilia existente usa el ojo del vacio (pupila negra que mira siempre a la NAVE y una corona rojo-ambar que respira con el reloj de simulacion; F5 la congela); mismo material, radio, orbita y rotacion; no depende del O2. Con el juego normal (--near 3 arranca junto a Vigilia; admite la criatura estatica y su revelacion) o con --creature-solar-reveal, y en ambos con o sin --lucid-surface; no con --legacy ni, fuera del Sol con ojo, con --creature-eye-compare, --creature-distant-turn o --creature-horizontal-follow
 Percepcion alterada (aprobada 02, opt-in): --lucid-perception: ultimo paso de color de cada cuadro (grises + morado del monstruo, tunel hacia la nave proyectada y vision borrosa bajo 50 % de O2; negro total solo con O2 0; con O2 >= 50 % el cuadro es el de siempre). Con el juego normal o con --creature-solar-reveal, y en ambos con o sin --lucid-surface y --void-eye; no con --legacy ni, fuera del Sol con ojo, con --creature-eye-compare, --creature-distant-turn o --creature-horizontal-follow; --output debe ser .png. Progresivo: 1-4 y M/N cambian el OBJETIVO de O2 y el O2 mostrado lo sigue a 0.25 por segundo real, al bajar y al recuperar (F5 no lo congela; R lo conserva; nada consume O2 solo); el titulo muestra O2 y objetivo
@@ -189,6 +205,22 @@ CAPTURA AUTOMATICA por contacto (GT3, opt-in): --tentacle-auto-capture (requiere
         return Err(
             "--auto-capture-replay no se combina con --frames: requiere completar Done".into(),
         );
+    }
+    // Experiencia completa por defecto en la VENTANA (`cargo run` sin flags): ojos en las
+    // estrellas (implican la percepcion), superficie lucida en Antena, ojo del vacio en Vigilia
+    // y un tanque de oxigeno de demostracion. No aplica con `--headless` (las capturas y pruebas
+    // conservan el cuadro de siempre), con `--classic`, con `--legacy` ni con las candidatas de
+    // mirada que no admiten estos efectos fuera del Sol con ojo.
+    let default_effects = !classic
+        && !headless
+        && !legacy
+        && (creature_solar_reveal
+            || !(creature_eye_compare || creature_distant_turn || creature_horizontal_follow));
+    if default_effects {
+        watching_stars = true;
+        lucid_surface = true;
+        void_eye = true;
+        oxygen_seconds.get_or_insert(DEFAULT_GAME_OXYGEN_SECONDS);
     }
     // Composicion observadora del tentaculo (opt-in): sus combinaciones antes de cualquier archivo.
     capture_flags.solar = creature_solar_reveal;
@@ -339,6 +371,7 @@ CAPTURA AUTOMATICA por contacto (GT3, opt-in): --tentacle-auto-capture (requiere
         let options = umbral::app::ConfiguredGameOptions {
             options,
             gameplay_feedback,
+            oxygen_seconds,
             oxygen_source: if debug_oxygen.is_some() {
                 umbral::app::OxygenSource::Debug
             } else {

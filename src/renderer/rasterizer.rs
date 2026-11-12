@@ -72,46 +72,67 @@ pub struct RasterVertex {
     pub uv: Vec2,
 }
 
-/// Rasteriza un triangulo ejecutando `shade` una vez por fragmento que pasa el z-test.
-/// Devuelve `(fragmentos evaluados, pixeles escritos)`.
-pub fn triangle_shaded(
-    framebuffer: &mut Framebuffer,
-    mut v: [RasterVertex; 3],
-    shade: &mut impl FnMut(&FragmentInput) -> Color,
-) -> (usize, usize) {
-    let finite = |p: &RasterVertex| {
-        p.x.is_finite() && p.y.is_finite() && p.z.is_finite() && p.inverse_w.is_finite()
-    };
-    if !v.iter().all(finite) {
-        return (0, 0);
+/// Triangulo listo para rasterizar: vertices en orden antihorario, area y caja recortada a la
+/// pantalla. Separar la preparacion de las filas permite rasterizar por filas en paralelo con
+/// exactamente las mismas operaciones de coma flotante que la ruta secuencial.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PreparedTriangle {
+    v: [RasterVertex; 3],
+    area: f64,
+    x_min: isize,
+    x_max: isize,
+    pub(crate) y_min: isize,
+    pub(crate) y_max: isize,
+}
+
+impl PreparedTriangle {
+    /// `None` si algun vertice no es finito o el triangulo es degenerado.
+    pub(crate) fn new(mut v: [RasterVertex; 3], width: usize, height: usize) -> Option<Self> {
+        let finite = |p: &RasterVertex| {
+            p.x.is_finite() && p.y.is_finite() && p.z.is_finite() && p.inverse_w.is_finite()
+        };
+        if !v.iter().all(finite) {
+            return None;
+        }
+        let mut area = edge_of(&v[0], &v[1], v[2].x, v[2].y);
+        if !area.is_finite() || area.abs() < 1e-12 {
+            return None;
+        }
+        if area < 0.0 {
+            v.swap(1, 2);
+            area = -area;
+        }
+        let [a, b, c] = v;
+        Some(Self {
+            v,
+            area,
+            x_min: a.x.min(b.x).min(c.x).floor().max(0.0) as isize,
+            x_max: a.x.max(b.x).max(c.x).ceil().min(width as f64 - 1.0) as isize,
+            y_min: a.y.min(b.y).min(c.y).floor().max(0.0) as isize,
+            y_max: a.y.max(b.y).max(c.y).ceil().min(height as f64 - 1.0) as isize,
+        })
     }
-    let edge_of = |a: &RasterVertex, b: &RasterVertex, x: f64, y: f64| {
-        (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x)
-    };
-    let mut area = edge_of(&v[0], &v[1], v[2].x, v[2].y);
-    if !area.is_finite() || area.abs() < 1e-12 {
-        return (0, 0);
+
+    /// Pixeles de la caja envolvente (estimacion del trabajo).
+    pub(crate) fn box_area(&self) -> usize {
+        let w = (self.x_max - self.x_min + 1).max(0) as usize;
+        let h = (self.y_max - self.y_min + 1).max(0) as usize;
+        w * h
     }
-    if area < 0.0 {
-        v.swap(1, 2);
-        area = -area;
-    }
-    let [a, b, c] = v;
-    let x_min = a.x.min(b.x).min(c.x).floor().max(0.0) as isize;
-    let x_max =
-        a.x.max(b.x)
-            .max(c.x)
-            .ceil()
-            .min(framebuffer.width as f64 - 1.0) as isize;
-    let y_min = a.y.min(b.y).min(c.y).floor().max(0.0) as isize;
-    let y_max =
-        a.y.max(b.y)
-            .max(c.y)
-            .ceil()
-            .min(framebuffer.height as f64 - 1.0) as isize;
-    let (mut fragments, mut written) = (0, 0);
-    for y in y_min..=y_max {
-        for x in x_min..=x_max {
+
+    /// Rasteriza la fila `y` (dentro de `y_min..=y_max`) sobre sus buffers de color y
+    /// profundidad. Devuelve `(fragmentos evaluados, pixeles escritos)`.
+    pub(crate) fn shade_row(
+        &self,
+        y: isize,
+        pixels: &mut [u32],
+        depth: &mut [f64],
+        shade: &mut impl FnMut(&FragmentInput) -> Color,
+    ) -> (usize, usize) {
+        let [a, b, c] = self.v;
+        let area = self.area;
+        let (mut fragments, mut written) = (0, 0);
+        for x in self.x_min..=self.x_max {
             let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
             let w0 = edge_of(&b, &c, px, py) / area;
             let w1 = edge_of(&c, &a, px, py) / area;
@@ -119,8 +140,9 @@ pub fn triangle_shaded(
             if w0 < -1e-10 || w1 < -1e-10 || w2 < -1e-10 {
                 continue;
             }
-            let depth = w0 * a.z + w1 * b.z + w2 * c.z;
-            if !framebuffer.depth_passes(x, y, depth) {
+            let depth_value = w0 * a.z + w1 * b.z + w2 * c.z;
+            let slot = x as usize;
+            if !(depth_value.is_finite() && depth_value < depth[slot]) {
                 continue;
             }
             // Con correccion de perspectiva: cada atributo se pondera por 1/w.
@@ -128,7 +150,7 @@ pub fn triangle_shaded(
             let inv = 1.0 / (p0 + p1 + p2);
             let (p0, p1, p2) = (p0 * inv, p1 * inv, p2 * inv);
             let fragment = FragmentInput {
-                screen_position: Vec3::new(px, py, depth),
+                screen_position: Vec3::new(px, py, depth_value),
                 world_position: a.world_position * p0
                     + b.world_position * p1
                     + c.world_position * p2,
@@ -137,8 +159,34 @@ pub fn triangle_shaded(
             };
             fragments += 1;
             let color = to_rgb8(shade(&fragment));
-            written += usize::from(framebuffer.write(x, y, depth, color));
+            depth[slot] = depth_value;
+            pixels[slot] = color & 0xffffff;
+            written += 1;
         }
+        (fragments, written)
+    }
+}
+
+fn edge_of(a: &RasterVertex, b: &RasterVertex, x: f64, y: f64) -> f64 {
+    (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x)
+}
+
+/// Rasteriza un triangulo ejecutando `shade` una vez por fragmento que pasa el z-test.
+/// Devuelve `(fragmentos evaluados, pixeles escritos)`.
+pub fn triangle_shaded(
+    framebuffer: &mut Framebuffer,
+    v: [RasterVertex; 3],
+    shade: &mut impl FnMut(&FragmentInput) -> Color,
+) -> (usize, usize) {
+    let Some(triangle) = PreparedTriangle::new(v, framebuffer.width, framebuffer.height) else {
+        return (0, 0);
+    };
+    let (mut fragments, mut written) = (0, 0);
+    for y in triangle.y_min..=triangle.y_max {
+        let (pixels, depth) = framebuffer.row_mut(y as usize);
+        let (f, w) = triangle.shade_row(y, pixels, depth, shade);
+        fragments += f;
+        written += w;
     }
     (fragments, written)
 }

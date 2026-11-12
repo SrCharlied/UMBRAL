@@ -10,11 +10,11 @@ Proyecto final de Gráficas por Computadora: exploración de un sistema solar pe
 - `World.reset_ship` conserva oxígeno/avance; `World.restart_game` es el reinicio completo. Las únicas migraciones de pruebas antiguas son siete llamadas de Persona 2, registradas byte a byte en el ledger de implementación.
 - La reserva real se consume con `min(elapsed, 0.1)` en el bucle. La transición visual usa `elapsed` completo; `F5` congela sólo órbitas. Los presets y M/N son override visual; `0` vuelve al real con suavizado cuando hay percepción. Una cápsula no garantiza suelta si el override sigue bajo.
 - Captura posee la trayectoria: gravedad, asistencia y colisiones no publican poses provisionales mientras está bloqueada. Recolección y objetivo usan el trayecto efectivamente publicado por el arrastre.
-- Muerte por reserva real y victoria congelan nave, captura y reloj del arrastre hasta partida nueva. No se añade daño por captura ni animación/audio/blackout de muerte.
+- Muerte por reserva real y victoria congelan nave, captura y reloj del arrastre hasta partida nueva. No se añade daño por captura ni audio. Sobre el cuadro congelado se dibuja la **presentación final** (ver «Final de partida»).
 - Las balizas permanecen integradas. La franja técnica está desactivada por defecto; `--gameplay-feedback` la añade antes del postproceso final. F1/`--overlay` sigue siendo independiente. Pruebas headless comparan el RGB exacto y negro total a O2 cero.
 - `ConfiguredGameOptions` es un envoltorio aditivo aceptado por las entradas existentes; conserva sus validadores. `OxygenSource::Real` y `OxygenSource::Debug` conservan el origen explícito, incluido `--debug-oxygen 1`. La conversión de `GameOptions` conserva la interpretación heredada (`Legacy`), no puede recuperar información que ese struct no contiene.
 - Identidad: las rutas congeladas (terminal y reinicio) usan la misma identidad exacta del bind que el paso activo (`SpatialPursuit::check_bound_identity`, sólo lectura). Los cuadros compartidos `advance_auto_capture_frame` y `advance_capture_frame` validan esa identidad antes de devolver el estado congelado o reenlazar; una criatura ajena con la misma geometría es `Err` sin efectos.
-- Terminal: el despacho del bucle (`dispatch_frame_keys`, `FrameKeys::gated`) ignora R, 7, 8, H, G, O, 0, 1-4, M/N, F7 y X; sólo `Shift+R` sigue disponible. Los relojes de la composición observadora y de las persecuciones no avanzan. F1, F3-F6, P y Esc no cambian nave ni captura.
+- Terminal: el despacho del bucle (`dispatch_frame_keys`, `FrameKeys::gated`) ignora R, 7, 8, H, G, O, 0, 1-4, M/N, F7 y X; sólo `Shift+R` sigue disponible. Los relojes de la composición observadora y de las persecuciones no avanzan. F1-F6, P y Esc no cambian nave ni captura.
 - `Shift+R` restablece el arranque de la ruta (`--near`, `--near-creature`, preset LEJOS de las candidatas), objetivo de mirada, H, giro, reloj y O2; cancela la composición observadora, reenlaza la persecución y limpia las notas.
 - Headless, ventana y `P` comparten `compose_presentation`. Esa prueba cubre el código común, no la interacción física con la ventana.
 - `Ship::update` satura los controles finitos en [-1, 1] (Persona 2). El caso que esperaba un desbordamiento de `yaw = f64::MAX` se sustituyó por la saturación coherente; los rechazos de NaN/±inf se conservan.
@@ -35,6 +35,15 @@ Las secciones visuales históricas siguientes documentan las composiciones aprob
 cargo run --release --locked
 ```
 
+**Por defecto, en la ventana, el juego arranca con la experiencia completa:**
+
+- Estrellas observadoras, que implican la percepción alterada.
+- Superficie lúcida en Antena y ojo del vacío en Vigilia.
+- Props y presentación final.
+- Tanque de oxígeno de **120 s**: los ojos aparecen hacia los 42 s, la percepción empieza a los 60 s y la muerte llega a los 120 s. `L` cambia el ritmo.
+
+Equivale a `--watching-stars --lucid-surface --void-eye --oxygen-seconds 120`. `--classic` arranca el juego sin esos efectos y con el tanque de 420 s. Con `--headless`, `--legacy` o las candidatas de mirada (`--creature-eye-compare`, `--creature-distant-turn`, `--creature-horizontal-follow`) tampoco se activan solos, así que las capturas y pruebas conservan el cuadro de siempre.
+
 | Tecla | Acción |
 |---|---|
 | `W` / `S` | Empuje hacia adelante / frenar y retroceder (suave, depende del tiempo) |
@@ -52,6 +61,8 @@ cargo run --release --locked
 | `F4` | Activar/desactivar el nivel de detalle (LOD) |
 | `F5` | Congelar/reanudar las órbitas (y, con `--void-eye`, la respiración de la corona de Vigilia) |
 | `F6` | Activar/desactivar el descarte de caras traseras |
+| `F2` | Mostrar/ocultar los props procedurales de los planetas |
+| `L` | Ritmo del oxígeno real: el tanque completo dura 420 → 120 → 60 → 30 s y vuelve a 420 (el título de la ventana muestra O₂ real y tanque) |
 | `1`–`4` | Oxígeno de depuración 100 / 50 / 25 / 5 %; controla la revelación en los modos de criatura y, con `--lucid-surface`, las grietas de Antena. Con `--lucid-perception` fija el **objetivo** y el O₂ llega de forma progresiva |
 | `M` / `N` | Subir / bajar el oxígeno de depuración en pasos de 5 puntos (con `--lucid-perception`, el objetivo) |
 | `7` / `8` | En el modo solar: vista frontal / oblicua |
@@ -63,7 +74,34 @@ El título de la ventana muestra FPS, velocidad y contadores (triángulos enviad
 
 Opciones implementadas: `--headless`, `--output archivo.png`, `--frames N` (cierra la ventana tras N frames), `--width N`, `--height N`, `--time S` (tiempo simulado inicial), `--near CUERPO` (arranca junto al cuerpo 0 = Sol, 1 = Antena, 2 = Osario, 3 = Vigilia), `--no-culling`, `--no-lod`, `--overlay` (dibuja el overlay también en `--headless`) y `--legacy` (visor ortográfico heredado). `--help` existe, pero su texto es básico y está desactualizado; actualizarlo queda pendiente.
 
-Medición de rendimiento sin ventana: `cargo run --release --example frame_time`.
+Medición de rendimiento sin ventana: `cargo run --release --example frame_time` (escena) y `cargo run --release --example perf_bench` (escena, ojos y percepción por separado).
+
+### Oxígeno para demostraciones
+
+- `--oxygen-seconds S` fija cuántos segundos dura el tanque completo de oxígeno **real**; por defecto son 420 s. Por ejemplo, `--oxygen-seconds 60` hace que la percepción empiece a los 30 s, los ojos aparezcan hacia los 21 s y la muerte llegue al minuto.
+- En juego, `L` alterna 420 / 120 / 60 / 30 s sin tocar el oxígeno que queda: solo cambia la velocidad desde ese momento. `Shift+R` conserva el ritmo elegido.
+- Los **ojos en las estrellas** son opt-in: solo aparecen con `--watching-stars`, que también activa la percepción. Siguen al O₂ mostrado, que a su vez sigue al real; no hay ninguno con O₂ ≥ 65 %. Demostración completa:
+
+```bash
+cargo run --release --locked -- --watching-stars --lucid-surface --void-eye --oxygen-seconds 60
+```
+
+### Rendimiento: rasterización en paralelo
+
+- `draw_model` reparte las **filas** de la pantalla entre hilos (`y % hilos`). Cada hilo recorre todos los triángulos en el orden de siempre y solo escribe sus filas, así que el cuadro es **idéntico bit a bit** al secuencial (`tests/parallel_raster.rs`). Solo se paraleliza un dibujo con más de 24 000 píxeles de cajas envolventes; los pequeños siguen en un hilo.
+- La percepción (`lucid_perception_variant`) reparte bloques de filas en sus dos pasadas, con las mismas operaciones por píxel. Sus pruebas de RGB exacto siguen pasando.
+- Hilos: hasta 8 (los núcleos disponibles). `UMBRAL_THREADS=1` vuelve al modo secuencial; sirve para comparar.
+- Medición (`perf_bench`, release, 1280×720, `--lucid-surface --void-eye`, suma de 10 escenarios con O₂ 100 % y 30 %): **409 ms con 1 hilo → 172 ms con 8**. El peor caso, junto a Antena con O₂ 30 %, pasa de 87 ms (11 FPS) a 27 ms (37 FPS). Es una medición en una sola máquina de 32 hilos, no un benchmark general.
+
+### Final de partida
+
+Al agotarse el oxígeno o al llegar al Sol con los tres registros, la partida se congela (lógica de Persona 2, sin cambios) y `compose_presentation` añade como **última capa** el cierre de `visual::ending`:
+
+- **Muerte («SIN OXIGENO»):** la escena se desatura hacia un rojo apagado y un iris se cierra hacia el centro durante 2.6 s.
+- **Victoria («EL UMBRAL»):** destello blanco cálido que se asienta en un fondo ámbar con el resplandor del Sol al centro.
+- Desde 1.4 s, el texto narrativo aparece letra por letra: el epílogo depende de los registros reunidos o del oxígeno restante. Después vienen el tiempo de misión, los recursos y los registros, y al final parpadea `SHIFT+R: NUEVA PARTIDA | ESC: SALIR`.
+- El reloj (`EndingClock`) cuenta segundos **reales** y avanza como máximo 0.25 s por cuadro; `Shift+R` lo reinicia. En `--headless` con la partida terminada, el final se dibuja completo.
+- Vista sin ventana de ambos finales y de los props: `cargo run --release --example ending_and_props` (escribe en `renders/smoke/`).
 
 ### Sol con ojo integrado
 

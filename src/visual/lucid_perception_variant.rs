@@ -79,9 +79,11 @@ fn blur_rows(source: &Framebuffer, sigma: f64) -> (Vec<f64>, Vec<[f32; 3]>) {
     let total: f64 = kernel.iter().sum();
     kernel.iter_mut().for_each(|w| *w /= total);
     let width = source.width;
-    let mut rows = Vec::with_capacity(source.pixels.len());
-    for line in source.pixels.chunks_exact(width) {
-        for x in 0..width {
+    let mut rows = vec![[0.0f32; 3]; source.pixels.len()];
+    // Filas independientes: se reparten en bloques entre hilos con las mismas operaciones.
+    parallel_rows(&mut rows, width, |y, out| {
+        let line = &source.pixels[y * width..(y + 1) * width];
+        for (x, slot) in out.iter_mut().enumerate() {
             let mut c = [0.0; 3];
             for (k, weight) in kernel.iter().enumerate() {
                 let v = channels(line[(x + k).saturating_sub(radius).min(width - 1)]);
@@ -89,10 +91,34 @@ fn blur_rows(source: &Framebuffer, sigma: f64) -> (Vec<f64>, Vec<[f32; 3]>) {
                     c[i] += weight * v[i];
                 }
             }
-            rows.push(c.map(|v| v as f32));
+            *slot = c.map(|v| v as f32);
         }
-    }
+    });
     (kernel, rows)
+}
+
+/// Aplica `f(fila, salida_de_la_fila)` a cada fila de `out` (`width` elementos por fila),
+/// repartiendo bloques contiguos de filas entre hilos. El resultado no depende del reparto.
+fn parallel_rows<T: Send>(out: &mut [T], width: usize, f: impl Fn(usize, &mut [T]) + Sync) {
+    let height = out.len() / width.max(1);
+    let threads = umbral::renderer::pipeline::raster_threads().min(height.max(1));
+    if threads <= 1 {
+        for (y, row) in out.chunks_mut(width).enumerate() {
+            f(y, row);
+        }
+        return;
+    }
+    let rows_per = height.div_ceil(threads);
+    std::thread::scope(|scope| {
+        for (block, chunk) in out.chunks_mut(rows_per * width).enumerate() {
+            let f = &f;
+            scope.spawn(move || {
+                for (i, row) in chunk.chunks_mut(width).enumerate() {
+                    f(block * rows_per + i, row);
+                }
+            });
+        }
+    });
 }
 
 /// Rechaza entradas sin sentido ANTES de reservar o escribir, tambien en los atajos de
@@ -150,13 +176,13 @@ pub fn lucid_perception_variant(
     let fade = smoothstep(0.0, BLACKOUT_FADE_OXYGEN, oxygen01);
     let (kernel, blurred_rows) = blur_rows(source, BLUR_MAX_SIGMA_FRACTION * short * strength);
     let radius = kernel.len() / 2;
-    let mut output = Vec::with_capacity(source.pixels.len());
-    for y in 0..height {
-        for x in 0..width {
+    let mut output = vec![0u32; source.pixels.len()];
+    parallel_rows(&mut output, width, |y, out| {
+        for (x, slot) in out.iter_mut().enumerate() {
             let (dx, dy) = (x as f64 + 0.5 - fx, y as f64 + 0.5 - fy);
             let visible = 1.0 - smoothstep(inner, outer, (dx * dx + dy * dy).sqrt() / short);
             if visible == 0.0 {
-                output.push(0);
+                *slot = 0;
                 continue;
             }
             // Segunda pasada (vertical) solo donde el tunel deja ver.
@@ -175,12 +201,12 @@ pub fn lucid_perception_variant(
             // Solo en el fundido final: no perder toda la senal por redondeo a RGB8.
             // Con luminancia positiva el tinte tiene tres canales positivos; el piso
             // de un nivel no ilumina una muestra negra ni el exterior del tunel.
-            output.push(if fade < 1.0 && pixel == 0 && l > 0.0 {
+            *slot = if fade < 1.0 && pixel == 0 && l > 0.0 {
                 0x010101
             } else {
                 pixel
-            });
+            };
         }
-    }
+    });
     Ok(output)
 }
