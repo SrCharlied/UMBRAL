@@ -2,6 +2,7 @@
 
 use crate::{
     assets::{obj::load_model, ship_model_path},
+    audio::{Audio, AudioDirector, AudioSnapshot, Sfx, ambient_params},
     debug::overlay::{OverlayState, draw_overlay, overlay_lines},
     renderer::{
         framebuffer::Framebuffer,
@@ -111,10 +112,13 @@ pub struct ConfiguredGameOptions {
 
 /// Ritmos de consumo que alterna la tecla `L`: segundos para vaciar el tanque completo.
 /// 420 s es el juego normal; los demas sirven para demostrar muerte, percepcion y ojos.
-pub const OXYGEN_PACE_SECONDS: [f64; 4] = [420.0, 120.0, 60.0, 30.0];
+pub const OXYGEN_PACE_SECONDS: [f64; 5] = [420.0, 120.0, 90.0, 60.0, 30.0];
 
 /// O2 que da cada tanque en la experiencia de presentacion (el juego clasico da 0.15).
 pub const PRESENTATION_TANK_RECOVERY: f64 = 0.25;
+
+/// Multiplicador del consumo de O2 con el turbo (Shift) en la experiencia por defecto.
+pub const BOOST_OXYGEN_DRAIN: f64 = 2.0;
 
 /// Segundos que dura el tanque completo con el consumo actual (`inf` si no se consume).
 pub fn oxygen_tank_seconds(world: &World) -> f64 {
@@ -2153,7 +2157,7 @@ fn run_with_tentacle_io(
     }
     if let Some(seconds) = options.oxygen_seconds {
         set_oxygen_tank_seconds(&mut world, seconds)?;
-        println!("Oxigeno: el tanque completo dura {seconds:.0} s (L alterna 420/120/60/30 s)");
+        println!("Oxigeno: el tanque completo dura {seconds:.0} s (L alterna 420/120/90/60/30 s)");
     }
     if let Some(reserve) = options.oxygen_hud.initial_reserve {
         // Preview del HUD: RESERVA REAL inicial (no un override visual). El O2 visual la sigue como siempre
@@ -2192,6 +2196,7 @@ fn run_with_tentacle_io(
         world.enable_sectors();
         world.oxygen_keys_drive_real = true;
         world.gameplay.settings.pickup_recovery = PRESENTATION_TANK_RECOVERY;
+        world.boost_oxygen_drain = BOOST_OXYGEN_DRAIN;
         // Se gana al leer el tercer registro (final «EL SECRETO»), sin ir al Sol donde vive el monstruo.
         world.gameplay.settings.win_on_logs = true;
         println!(
@@ -2618,6 +2623,18 @@ fn run_with_tentacle_io(
     // atrapa con la captura aprobada y te mata.
     let monster_mode = options.presentation && auto.is_some();
     let mut monster = MonsterDeath::new();
+    // Sonido (solo en ventana real, nunca en el replay determinista): `--no-sound` lo apaga y U
+    // silencia en juego.
+    let sound = if replay.is_none() {
+        Audio::start()
+    } else {
+        None
+    };
+    let mut director = AudioDirector::new();
+    let mut muted = false;
+    if sound.is_some() {
+        println!("Sonido: activo (U silencia; --no-sound lo desactiva)");
+    }
     while io.is_open() && !io.down(Key::Escape) {
         let elapsed = io.elapsed();
         // Limitar dt evita saltos enormes tras arrastrar la ventana o pausar el proceso.
@@ -2664,12 +2681,20 @@ fn run_with_tentacle_io(
         if io.pressed(Key::F1) {
             show_overlay ^= true;
         }
+        let mut ui_blip = false;
+        if io.pressed(Key::U) {
+            muted ^= true;
+            ui_blip = true;
+            println!("U: sonido {}", if muted { "SILENCIADO" } else { "activo" });
+        }
         if io.pressed(Key::L) {
             let seconds = cycle_oxygen_pace(&mut world);
             println!("L: el tanque completo de oxigeno dura ahora {seconds:.0} s");
+            ui_blip = true;
         }
         if io.pressed(Key::F2) {
             world.toggles.planet_props ^= true;
+            ui_blip = true;
         }
         if io.pressed(Key::F6) {
             world.toggles.backface_culling ^= true;
@@ -2815,6 +2840,20 @@ fn run_with_tentacle_io(
                     capture_note = format!(" | paso rechazado: {error}");
                 }
             }
+        }
+        // Sonido: efectos segun lo que paso en el cuadro y ambiente segun el estado.
+        if let Some(audio) = &sound {
+            let events = auto_frame
+                .as_ref()
+                .and_then(|f| f.status.as_ref().ok())
+                .map_or(&[][..], |s| s.events.as_slice());
+            for sfx in director.frame(AudioSnapshot::of(&world), events) {
+                audio.play(sfx);
+            }
+            if ui_blip {
+                audio.play(Sfx::Blip);
+            }
+            audio.set_params(ambient_params(&world, muted));
         }
         let stats = render(
             &world,

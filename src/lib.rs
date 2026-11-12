@@ -6,6 +6,7 @@ extern crate self as umbral;
 
 pub mod app;
 pub mod assets;
+pub mod audio;
 pub mod config;
 pub mod debug;
 pub mod gameplay;

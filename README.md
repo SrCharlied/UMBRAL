@@ -42,13 +42,13 @@ cargo run --release --locked
 - Props y presentación final.
 - **El monstruo «La Vigilia»** (`assets/creature`): vive en el centro del Sol y se revela con el O₂. **Cuando el O₂ real llega a 0 es la animación de muerte** (`visual::monster_death`): el monstruo toma el control y jala la nave hacia él, el tentáculo la atrapa y la arrastra (captura automática aprobada, sin cambios) y, a los 1.5 s de quedar retenida, llega la muerte con la pantalla final. Durante la secuencia el HUD muestra O₂ 0 % y «SIN OXIGENO - ALGO TE ARRASTRA»; si la captura no llegara en 25 s, la muerte llega igual. Se activa solo si `assets/creature` está completo y no se usan `--near`, `--near-creature` ni otras opciones de criatura.
 - **Victoria al leer los tres registros**: en esta experiencia la partida se gana en cuanto recoges el tercer registro dorado, sin ir al Sol, con el final «EL SECRETO» («Has evitado caer en la locura»). `--classic` conserva la regla de siempre (tres registros y llegar al Sol).
-- Tanque de oxígeno de **120 s**: los ojos aparecen hacia los 42 s, la percepción empieza a los 60 s y la muerte llega a los 120 s. `L` cambia el ritmo.
+- Tanque de oxígeno de **90 s**: los ojos aparecen hacia los 31 s, la percepción empieza a los 45 s y la muerte llega a los 90 s. **El turbo (`Shift`) gasta el doble de O₂** (`BOOST_OXYGEN_DRAIN`). `L` cambia el ritmo: 420 / 120 / 90 / 60 / 30 s.
 - **Espacio procedural por sectores** (`scene::sectors`): fuera del sistema solar (a más de 800 unidades del Sol) aparecen planetas errantes con props y tanques de oxígeno, generados por celdas de 700 unidades conforme avanzas. Son deterministas (al volver encuentras los mismos) y tienen colisión. En esta experiencia **cada tanque da +25 % de O₂** (`PRESENTATION_TANK_RECOVERY`; el juego clásico da +15 %).
 - **Tanques de oxígeno modelados** (cian, con pulso) en lugar de las esferas pequeñas, y **marcadores en pantalla**: rombo cian «O2 distancia» para los 3 tanques más cercanos y rombo dorado «REG distancia» para los registros que faltan. Fuera de vista se pegan al borde.
 - **HUD de oxígeno** arriba al centro (`visual::oxygen_hud`): instrumento oscuro hundido en el borde cuyo arco y lectura «O2 xx%» muestran el O₂ **real** y se vacían de derecha a izquierda conforme baja; va encima de la percepción para seguir legible con O₂ bajo y marca 0 % durante la muerte por el monstruo. Debajo queda un hueco reservado para el ojo y, bajo él, las notas: registros y tanques recogidos, aviso «+25% O2» al recoger un tanque y «SIN OXIGENO - ALGO TE ARRASTRA» durante la secuencia del monstruo.
 - **`N`/`M` y `1`–`4` mueven también el O₂ real**: mientras el mostrado va al objetivo, el real lo sigue, así que al bajar con `N` hasta la pantalla negra llega la muerte y la pantalla final. Al alcanzar el objetivo, el forzado se suelta y el mostrado vuelve a seguir al real: los tanques suben el O₂ y los ojos desaparecen (ninguno con O₂ ≥ 65 %).
 
-Equivale a `--watching-stars --lucid-surface --void-eye --oxygen-seconds 120` más el espacio procedural y las teclas de O₂ reales, que no tienen bandera propia. `--classic` arranca el juego sin nada de esto y con el tanque de 420 s, donde `N` vuelve a ser solo visual. Con `--headless`, `--legacy` o las candidatas de mirada (`--creature-eye-compare`, `--creature-distant-turn`, `--creature-horizontal-follow`) tampoco se activan solos, así que las capturas y pruebas conservan el cuadro de siempre.
+Equivale a `--watching-stars --lucid-surface --void-eye --oxygen-seconds 90` más el espacio procedural y las teclas de O₂ reales, que no tienen bandera propia. `--classic` arranca el juego sin nada de esto y con el tanque de 420 s, donde `N` vuelve a ser solo visual. Con `--headless`, `--legacy` o las candidatas de mirada (`--creature-eye-compare`, `--creature-distant-turn`, `--creature-horizontal-follow`) tampoco se activan solos, así que las capturas y pruebas conservan el cuadro de siempre.
 
 | Tecla | Acción |
 |---|---|
@@ -68,7 +68,8 @@ Equivale a `--watching-stars --lucid-surface --void-eye --oxygen-seconds 120` m�
 | `F5` | Congelar/reanudar las órbitas (y, con `--void-eye`, la respiración de la corona de Vigilia) |
 | `F6` | Activar/desactivar el descarte de caras traseras |
 | `F2` | Mostrar/ocultar los props procedurales de los planetas |
-| `L` | Ritmo del oxígeno real: el tanque completo dura 420 → 120 → 60 → 30 s y vuelve a 420 (el título de la ventana muestra O₂ real y tanque) |
+| `U` | Silenciar / reactivar el sonido |
+| `L` | Ritmo del oxígeno real: el tanque completo dura 420 → 120 → 90 → 60 → 30 s y vuelve a 420 (el título de la ventana muestra O₂ real y tanque) |
 | `1`–`4` | Oxígeno de depuración 100 / 50 / 25 / 5 %; controla la revelación en los modos de criatura y, con `--lucid-surface`, las grietas de Antena. Con `--lucid-perception` fija el **objetivo** y el O₂ llega de forma progresiva |
 | `M` / `N` | Subir / bajar el oxígeno de depuración en pasos de 5 puntos (con `--lucid-perception`, el objetivo) |
 | `7` / `8` | En el modo solar: vista frontal / oblicua |
@@ -81,6 +82,30 @@ El título de la ventana muestra FPS, velocidad y contadores (triángulos enviad
 Opciones implementadas: `--headless`, `--output archivo.png`, `--frames N` (cierra la ventana tras N frames), `--width N`, `--height N`, `--time S` (tiempo simulado inicial), `--near CUERPO` (arranca junto al cuerpo 0 = Sol, 1 = Antena, 2 = Osario, 3 = Vigilia), `--no-culling`, `--no-lod`, `--overlay` (dibuja el overlay también en `--headless`) y `--legacy` (visor ortográfico heredado). `--help` existe, pero su texto es básico y está desactualizado; actualizarlo queda pendiente.
 
 Medición de rendimiento sin ventana: `cargo run --release --example frame_time` (escena) y `cargo run --release --example perf_bench` (escena, ojos y percepción por separado).
+
+### Sonido
+
+Todo el sonido se **genera por código** (`src/audio/synth.rs`: osciladores, ruido y envolventes), sin archivos de audio ni dependencias nuevas. Sale por la API `waveOut` de Windows (winmm) desde un hilo propio, con unos 90 ms de latencia. En otros sistemas, con `--headless` o en el replay determinista, no suena nada.
+
+| Momento | Sonido |
+|---|---|
+| Siempre | Zumbido grave del espacio con viento filtrado |
+| Al volar | Motor que sube de tono con la velocidad y siseo con el impulso (`Shift`) |
+| O₂ bajo 65 % (aparecen los ojos) | Susurro al cruzar el umbral y un cúmulo agudo con trémolo que crece al bajar el O₂ |
+| O₂ cruza 50 %, 25 % y 10 % | Alarma de doble pitido |
+| O₂ bajo 30 % | Latido que se acelera y sube de volumen |
+| Tanque de O₂ | Campanita ascendente |
+| Registro dorado | Arpegio de campanas sobre un bordón |
+| Choque con un planeta | Golpe sordo |
+| El monstruo despierta (O₂ a 0) | Rugido grave, más retumbar y latido continuos |
+| El tentáculo atrapa / arrastra | Golpe húmedo / retumbar con crujidos |
+| El monstruo mata | Impacto y alarido descendente |
+| Muerte por asfixia (sin monstruo) | Latido que se apaga y línea plana |
+| Victoria («EL SECRETO» o «EL UMBRAL») | Fanfarria de cuatro notas ascendentes y luego un acorde mayor que crece con brillo (si ganas con el tercer registro, suena solo la fanfarria) |
+| Partida nueva (`Shift+R`) | Barrido ascendente |
+| `L`, `F2`, `U` | Clic |
+
+`U` silencia o reactiva el sonido en juego y `--no-sound` lo desactiva desde el arranque. En la pantalla final el ambiente baja de volumen. `tests/audio.rs` comprueba que cada sonido esté acotado y sea determinista, y que el director dispare el efecto correcto para cada cambio del juego.
 
 ### Oxígeno para demostraciones
 

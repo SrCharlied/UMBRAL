@@ -38,7 +38,7 @@ fn la_tecla_l_alterna_los_ritmos_y_vuelve_al_normal() {
     for _ in 0..OXYGEN_PACE_SECONDS.len() {
         seen.push(cycle_oxygen_pace(&mut w));
     }
-    assert_eq!(seen, [120.0, 60.0, 30.0, 420.0]);
+    assert_eq!(seen, [120.0, 90.0, 60.0, 30.0, 420.0]);
     // Desde un valor fuera de la lista vuelve al normal.
     set_oxygen_tank_seconds(&mut w, 45.0).unwrap();
     assert_eq!(cycle_oxygen_pace(&mut w), 420.0);
@@ -124,4 +124,44 @@ fn las_estrellas_abren_ojos_cuando_el_oxigeno_real_baja_solo() {
         late.active_ids.len()
     );
     assert!(!w.gameplay.game_over);
+}
+
+#[test]
+fn el_turbo_gasta_el_doble_de_oxigeno_cuando_se_activa() {
+    let run = |boost_drain: f64, boost: bool| {
+        let mut w = world();
+        set_oxygen_tank_seconds(&mut w, 90.0).unwrap();
+        w.boost_oxygen_drain = boost_drain;
+        // Lejos de todo y hacia el vacio: el turbo no choca con nada.
+        w.ship = umbral::scene::ship::Ship::new(
+            umbral::math::Vec3::new(2000.0, 2000.0, 2000.0),
+            umbral::math::Vec3::X,
+        );
+        let input = ShipInput {
+            thrust: 1.0,
+            boost,
+            ..ShipInput::default()
+        };
+        // Primero acelera; despues mide 10 s de vuelo.
+        for _ in 0..60 {
+            w.update(&input, 0.05);
+        }
+        let start = w.gameplay.oxygen01;
+        for _ in 0..200 {
+            w.update(&input, 0.05);
+        }
+        start - w.gameplay.oxygen01
+    };
+    let normal = run(2.0, false);
+    let turbo = run(2.0, true);
+    let unpunished = run(1.0, true);
+    assert!((normal - 10.0 / 90.0).abs() < 0.01, "normal {normal}");
+    assert!(
+        (turbo / normal - 2.0).abs() < 0.1,
+        "turbo {turbo} vs {normal}"
+    );
+    assert!(
+        (unpunished - normal).abs() < 0.01,
+        "sin castigo {unpunished}"
+    );
 }

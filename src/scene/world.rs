@@ -136,6 +136,9 @@ pub struct World {
     pub last_pickup_gain: f64,
     /// Secuencia de muerte por el monstruo en curso (`visual::monster_death`): el HUD muestra 0 %.
     pub dying: bool,
+    /// Multiplicador del consumo de O2 con el turbo (Shift); 1 = sin castigo. La experiencia por
+    /// defecto usa `BOOST_OXYGEN_DRAIN`.
+    pub boost_oxygen_drain: f64,
     /// Modelo del tanque de oxigeno (coleccionables con `sectors`).
     tank_model: Model,
 }
@@ -254,6 +257,7 @@ impl World {
             pickup_flash: 0.0,
             last_pickup_gain: 0.0,
             dying: false,
+            boost_oxygen_drain: 1.0,
             tank_model: oxygen_tank_mesh(),
         };
         world.snap_camera();
@@ -497,6 +501,7 @@ impl World {
             self.time,
         );
         self.update_sectors(previous);
+        self.drain_boost_oxygen(dt);
         if self.gameplay.collected_resources > picked_before {
             self.pickup_flash = PICKUP_FLASH_SECONDS;
             self.last_pickup_gain = (self.gameplay.oxygen01 - oxygen_before).max(0.0);
@@ -528,6 +533,21 @@ impl World {
         let c = self.camera;
         // Los valores del lente ya son validos; si algun dia no lo fueran se conserva el anterior.
         let _ = self.camera.set_lens(fov, c.aspect, c.near, c.far);
+    }
+
+    /// Gasto extra de O2 con el turbo: con la nave por encima de su velocidad normal, el
+    /// consumo se multiplica por `boost_oxygen_drain`. Solo en partida activa.
+    fn drain_boost_oxygen(&mut self, dt: f64) {
+        let extra = self.boost_oxygen_drain - 1.0;
+        if !(extra.is_finite() && extra > 0.0)
+            || self.gameplay.game_over
+            || self.gameplay.objective_complete
+            || self.ship.speed <= self.ship.settings.max_speed * 1.05
+        {
+            return;
+        }
+        let drain = self.gameplay.settings.drain_per_second.max(0.0) * extra * dt;
+        self.gameplay.oxygen01 = (self.gameplay.oxygen01 - drain).clamp(0.0, 1.0);
     }
 
     /// Activa el espacio procedural (planetas errantes y tanques por sectores) y genera los
