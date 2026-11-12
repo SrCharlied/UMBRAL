@@ -4,6 +4,7 @@ use std::cell::{Cell, RefCell};
 
 use super::{
     camera::Camera,
+    sectors::SectorField,
     ship::{Ship, ShipInput, smoothing},
     solar_system::{CelestialBody, SolarSystem},
 };
@@ -32,7 +33,7 @@ use crate::{
             target_azimuth,
         },
         creature_reveal::{CreatureReveal, RevealCompositor, RevealPart, RevealSettings},
-        planet_props::{PlanetProps, build_system_props, prop_light_position},
+        planet_props::{PlanetProps, build_system_props, oxygen_tank_mesh, prop_light_position},
         solar_reveal_preview::{
             PairLayer, PairLayerKind, SolarPairCompositor, SolarRevealAlphas, SolarRevealLight,
             solar_reveal_alphas,
@@ -56,6 +57,8 @@ pub const BASE_FOV: f64 = 60.0 * std::f64::consts::PI / 180.0;
 pub const BOOST_FOV: f64 = 75.0 * std::f64::consts::PI / 180.0;
 
 pub const SPACE_COLOR: u32 = 0x03040a;
+/// Distancia maxima de dibujo de planetas errantes y tanques de los sectores.
+pub const SECTOR_DRAW_DISTANCE: f64 = 2400.0;
 /// El OBJ de la nave apunta a +Z o -Z segun Blender; este giro lo alinea con -Z (D11).
 pub const SHIP_MODEL_YAW: f64 = std::f64::consts::PI;
 
@@ -120,6 +123,13 @@ pub struct World {
     /// Sol con ojo (composicion aprobada 03, opt-in): solo lo dibuja
     /// `render_solar_reveal_preview` (el juego con `--creature-solar-reveal`).
     solar_preview: Option<SolarPreview>,
+    /// Espacio procedural alrededor del sistema (opt-in, `enable_sectors`): planetas errantes y
+    /// tanques de oxigeno por sectores. Con `Some`, los coleccionables usan el modelo de tanque.
+    pub sectors: Option<SectorField>,
+    /// Teclas de O2 de la percepcion (1-4, M/N) arrastran tambien el O2 REAL (presentacion).
+    pub oxygen_keys_drive_real: bool,
+    /// Modelo del tanque de oxigeno (coleccionables con `sectors`).
+    tank_model: Model,
 }
 
 /// Capa BODY alternativa del compositor solar (debug opt-in, `visual::tentacle_solar_game`): UNA
@@ -231,6 +241,9 @@ impl World {
             reveal_compositor: RefCell::new(RevealCompositor::new()),
             staged_reveal: None,
             solar_preview: None,
+            sectors: None,
+            oxygen_keys_drive_real: false,
+            tank_model: oxygen_tank_mesh(),
         };
         world.snap_camera();
         Ok(world)
@@ -275,6 +288,9 @@ impl World {
         let settings = self.gameplay.settings;
         self.gameplay = crate::gameplay::GameplayState::default();
         self.gameplay.settings = settings;
+        if let Some(field) = self.sectors.as_mut() {
+            field.reset_collected();
+        }
         self.time = 0.0;
         self.orbit_assist = false;
         self.forced_oxygen = None;
@@ -463,6 +479,7 @@ impl World {
             old_time,
             self.time,
         );
+        self.update_sectors(previous);
         if !self.visual_transition_owned {
             self.debug_oxygen01 = self.forced_oxygen.unwrap_or(self.gameplay.oxygen01);
             self.mirrored_oxygen = self.debug_oxygen01;
@@ -490,6 +507,43 @@ impl World {
         let c = self.camera;
         // Los valores del lente ya son validos; si algun dia no lo fueran se conserva el anterior.
         let _ = self.camera.set_lens(fov, c.aspect, c.near, c.far);
+    }
+
+    /// Activa el espacio procedural (planetas errantes y tanques por sectores) y genera los
+    /// sectores alrededor de la nave.
+    pub fn enable_sectors(&mut self) {
+        let mut field = SectorField::new();
+        field.update(self.ship.position);
+        self.sectors = Some(field);
+    }
+
+    /// Paso de los sectores tras el movimiento de la nave desde `previous`: genera los nuevos,
+    /// saca a la nave de los planetas errantes y recoge los tanques del trayecto (+O2 como las
+    /// capsulas del catalogo, contados en `collected_resources`).
+    fn update_sectors(&mut self, previous: Vec3) {
+        let Some(field) = self.sectors.as_mut() else {
+            return;
+        };
+        let ship_radius = self.gameplay.navigation.settings.ship_radius;
+        let mut position = self.ship.position;
+        if field.resolve_collision(previous, &mut position, self.time, ship_radius) {
+            self.ship.position = position;
+            self.ship.speed = 0.0;
+        }
+        field.update(self.ship.position);
+        if self.gameplay.game_over || self.gameplay.objective_complete {
+            return;
+        }
+        let picked = field.collect_along(
+            previous,
+            self.ship.position,
+            self.gameplay.settings.pickup_radius,
+        );
+        if picked > 0 {
+            self.gameplay.collected_resources += picked;
+            let gain = self.gameplay.settings.pickup_recovery * f64::from(picked);
+            self.gameplay.oxygen01 = (self.gameplay.oxygen01 + gain).clamp(0.0, 1.0);
+        }
     }
 
     /// Anade la criatura estatica (debug, opt-in). Comprueba antes que la luz del mundo sirve
@@ -1176,6 +1230,7 @@ impl World {
                 stats += self.draw_body(fb, index, body, &context, &frustum);
             }
         }
+        stats += self.draw_sector_planets(fb, &context, &frustum);
         let ship_transform = self.ship.transform(SHIP_MODEL_YAW);
         stats.objects_submitted += 1;
         stats += RenderStats {
@@ -1429,15 +1484,28 @@ impl World {
         context: &ShaderContext,
         frustum: &Frustum,
     ) -> RenderStats {
-        let mut stats = RenderStats::default();
         let Some(content) = self
             .planet_props
             .iter()
             .flatten()
             .find(|content| content.body == body_name)
         else {
-            return stats;
+            return RenderStats::default();
         };
+        self.draw_props_content(fb, content, transform, level, context, frustum)
+    }
+
+    /// Dibuja un conjunto de props sobre el cuerpo con `transform` (sistema o sectores).
+    pub(crate) fn draw_props_content(
+        &self,
+        fb: &mut Framebuffer,
+        content: &PlanetProps,
+        transform: &Transform,
+        level: usize,
+        context: &ShaderContext,
+        frustum: &Frustum,
+    ) -> RenderStats {
+        let mut stats = RenderStats::default();
         if !self.toggles.planet_props || level + 1 >= LOD_RESOLUTIONS.len() {
             return stats;
         }
@@ -1603,6 +1671,10 @@ impl World {
         context: &ShaderContext,
         stats: &mut RenderStats,
     ) {
+        if self.sectors.is_some() {
+            self.draw_tanks_and_logs(fb, context, stats);
+            return;
+        }
         let model = &self.sphere_lods[2];
         for (anchor, is_log) in self
             .gameplay
@@ -1629,6 +1701,127 @@ impl World {
                     self.draw_instance(fb, model, &transform, &material, ShaderKind::Flat, context);
             }
         }
+    }
+
+    /// Con sectores: tanques de oxigeno modelados (catalogo y sectores), con pulso de escala y
+    /// sin sombreado para que se distingan de lejos, y registros dorados mas grandes.
+    fn draw_tanks_and_logs(
+        &self,
+        fb: &mut Framebuffer,
+        context: &ShaderContext,
+        stats: &mut RenderStats,
+    ) {
+        let pulse = 1.0 + 0.12 * (self.time * 4.0).sin();
+        let tank_material = Material::from_model();
+        let tank = |position: Vec3, phase: f64| Transform {
+            position,
+            rotation: Vec3::new(0.35, self.time * 1.2 + phase, 0.0),
+            scale: Vec3::splat(3.4 * pulse),
+        };
+        for resource in self.gameplay.resources.iter().filter(|r| !r.collected) {
+            if let Some(position) = resource.position(&self.system, self.time) {
+                *stats += self.draw_instance(
+                    fb,
+                    &self.tank_model,
+                    &tank(position, resource.id as f64),
+                    &tank_material,
+                    ShaderKind::Flat,
+                    context,
+                );
+            }
+        }
+        if let Some(field) = &self.sectors {
+            for t in field.tanks() {
+                if (t.position - self.camera.position).length() > SECTOR_DRAW_DISTANCE {
+                    continue;
+                }
+                *stats += self.draw_instance(
+                    fb,
+                    &self.tank_model,
+                    &tank(t.position, (t.id % 97) as f64),
+                    &tank_material,
+                    ShaderKind::Flat,
+                    context,
+                );
+            }
+        }
+        for log in self.gameplay.logs.iter().filter(|l| !l.anchor.collected) {
+            if let Some(position) = log.anchor.position(&self.system, self.time) {
+                let transform = Transform {
+                    position,
+                    rotation: Vec3::new(0.0, self.time * 1.5, 0.0),
+                    scale: Vec3::splat(2.8 * pulse),
+                };
+                *stats += self.draw_instance(
+                    fb,
+                    &self.sphere_lods[1],
+                    &transform,
+                    &Material::solid(1.0, 0.68, 0.15),
+                    ShaderKind::Flat,
+                    context,
+                );
+            }
+        }
+    }
+
+    /// Planetas errantes de los sectores: esfera con LOD por tamano aparente (sin histeresis),
+    /// descarte por frustum y sus props. Cuentan como objetos.
+    fn draw_sector_planets(
+        &self,
+        fb: &mut Framebuffer,
+        context: &ShaderContext,
+        frustum: &Frustum,
+    ) -> RenderStats {
+        let mut stats = RenderStats::default();
+        let Some(field) = &self.sectors else {
+            return stats;
+        };
+        for planet in field.planets() {
+            let distance = (planet.center - self.camera.position).length();
+            if distance > SECTOR_DRAW_DISTANCE + planet.radius {
+                continue;
+            }
+            let transform = planet.transform(self.time);
+            let ratio = planet.radius / distance.max(1e-9);
+            let level = if !self.toggles.lod {
+                0
+            } else {
+                LOD_MIN_RATIO
+                    .iter()
+                    .position(|&min| ratio >= min)
+                    .unwrap_or(LOD_MIN_RATIO.len())
+            };
+            if let Some(props) = &planet.props {
+                stats += self.draw_props_content(fb, props, &transform, level, context, frustum);
+            }
+            let sphere = &self.sphere_lods[level];
+            stats.objects_submitted += 1;
+            if self.toggles.frustum_culling
+                && !frustum.sphere_visible(planet.center, sphere.bounds_radius * planet.radius)
+            {
+                stats.objects_culled += 1;
+                stats.triangles_submitted += sphere.faces.len();
+                stats.triangles_culled += sphere.faces.len();
+                continue;
+            }
+            let [r, g, b] = planet.color;
+            stats += RenderStats {
+                objects_submitted: 0,
+                ..draw_model(
+                    fb,
+                    sphere,
+                    &transform,
+                    &Material {
+                        cull_backfaces: self.toggles.backface_culling,
+                        ..Material::solid(r, g, b)
+                    },
+                    ShaderKind::LitPlanet,
+                    context,
+                    &self.camera,
+                )
+            };
+        }
+        stats
     }
 
     /// Dibuja el cuadro completo: fondo, estrellas, cuerpos, balizas y nave.
@@ -1670,6 +1863,7 @@ impl World {
             drawn.objects_submitted = 0; // ya contado arriba
             stats += drawn;
         }
+        stats += self.draw_sector_planets(fb, &context, &frustum);
         // Sin revelacion la criatura es opaca (1). En 0 ni se dibuja ni se cuenta, igual que
         // sin criatura; en 1 se dibuja aqui, como la estatica; parcial, al final (ver abajo).
         // Con etapas, `alpha` es la del ojo: el cuerpo solo es positivo con el ojo en 1, y la

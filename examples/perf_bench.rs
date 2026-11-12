@@ -31,6 +31,9 @@ fn main() -> Result<(), String> {
     )?;
     set_lucid_surface(&mut world, true)?;
     set_void_eye(&mut world, true)?;
+    if std::env::args().any(|a| a == "--sectors") {
+        world.enable_sectors();
+    }
     let frames = 20;
     let mut total = 0.0;
     for (label, near) in [

@@ -41,8 +41,11 @@ cargo run --release --locked
 - Superficie lúcida en Antena y ojo del vacío en Vigilia.
 - Props y presentación final.
 - Tanque de oxígeno de **120 s**: los ojos aparecen hacia los 42 s, la percepción empieza a los 60 s y la muerte llega a los 120 s. `L` cambia el ritmo.
+- **Espacio procedural por sectores** (`scene::sectors`): fuera del sistema solar (a más de 800 unidades del Sol) aparecen planetas errantes con props y tanques de oxígeno, generados por celdas de 700 unidades conforme avanzas. Son deterministas (al volver encuentras los mismos), tienen colisión y cada tanque da +15 % de O₂.
+- **Tanques de oxígeno modelados** (cian, con pulso) en lugar de las esferas pequeñas, y **marcadores en pantalla**: rombo cian «O2 distancia» para los 3 tanques más cercanos y rombo dorado «REG distancia» para los registros que faltan. Fuera de vista se pegan al borde.
+- **`N`/`M` y `1`–`4` mueven también el O₂ real**: el real sigue al mostrado, así que al bajar con `N` hasta la pantalla negra llega la muerte y la pantalla final. `0` deja de forzar y conserva el O₂ alcanzado.
 
-Equivale a `--watching-stars --lucid-surface --void-eye --oxygen-seconds 120`. `--classic` arranca el juego sin esos efectos y con el tanque de 420 s. Con `--headless`, `--legacy` o las candidatas de mirada (`--creature-eye-compare`, `--creature-distant-turn`, `--creature-horizontal-follow`) tampoco se activan solos, así que las capturas y pruebas conservan el cuadro de siempre.
+Equivale a `--watching-stars --lucid-surface --void-eye --oxygen-seconds 120` más el espacio procedural y las teclas de O₂ reales, que no tienen bandera propia. `--classic` arranca el juego sin nada de esto y con el tanque de 420 s, donde `N` vuelve a ser solo visual. Con `--headless`, `--legacy` o las candidatas de mirada (`--creature-eye-compare`, `--creature-distant-turn`, `--creature-horizontal-follow`) tampoco se activan solos, así que las capturas y pruebas conservan el cuadro de siempre.
 
 | Tecla | Acción |
 |---|---|

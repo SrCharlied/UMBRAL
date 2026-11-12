@@ -372,6 +372,7 @@ CAPTURA AUTOMATICA por contacto (GT3, opt-in): --tentacle-auto-capture (requiere
             options,
             gameplay_feedback,
             oxygen_seconds,
+            presentation: default_effects,
             oxygen_source: if debug_oxygen.is_some() {
                 umbral::app::OxygenSource::Debug
             } else {

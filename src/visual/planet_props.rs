@@ -56,6 +56,49 @@ pub struct PropLayer {
     pub rock_color: [f64; 3],
 }
 
+/// Capas para un planeta de los sectores procedurales: un tipo principal elegido por la
+/// semilla (mastiles, costillas o cristales) y rocas del color del suelo. Menos intentos y
+/// menos props que los planetas del sistema, porque pueden generarse varios a la vez.
+pub fn procedural_layers(seed: u64, ground: [f64; 3]) -> Vec<PropLayer> {
+    let kinds = [
+        (PropKind::Mast, (0.13, 0.19)),
+        (PropKind::Ribs, (0.16, 0.24)),
+        (PropKind::Crystals, (0.1, 0.17)),
+    ];
+    let (kind, scale) = kinds[(seed % 3) as usize];
+    let rock = ground.map(|c| (c * 0.8).clamp(0.0, 1.0));
+    vec![
+        PropLayer {
+            kind,
+            distribution: DistributionSettings {
+                seed,
+                attempts: 700,
+                noise_scale: 2.3,
+                threshold: 0.5,
+                min_spacing: 0.24,
+            },
+            scale,
+            elevation: -0.008,
+            max_count: 12,
+            rock_color: [0.0; 3],
+        },
+        PropLayer {
+            kind: PropKind::Rock,
+            distribution: DistributionSettings {
+                seed: seed ^ 0x5EC7_0B5E,
+                attempts: 600,
+                noise_scale: 3.1,
+                threshold: 0.5,
+                min_spacing: 0.15,
+            },
+            scale: (0.035, 0.07),
+            elevation: -0.01,
+            max_count: 18,
+            rock_color: rock,
+        },
+    ]
+}
+
 /// Contenido decidido por planeta, por nombre del cuerpo. El Sol y los cuerpos sin entrada no
 /// llevan props.
 pub fn layers_for(body_name: &str) -> Vec<PropLayer> {
@@ -468,6 +511,30 @@ pub fn prop_mesh(kind: PropKind, rock_color: [f64; 3], layer: usize) -> Model {
             b.convex(&v, &f, &rock);
         }
     }
+    let mut model = b.finish();
+    model.update_bounds();
+    model
+}
+
+/// Tanque de oxigeno (coleccionable): cilindro octogonal con tapas conicas, dos bandas claras y
+/// una valvula arriba. Pivote en el centro, +Y arriba, alto total ~1.6 en unidades del modelo.
+pub fn oxygen_tank_mesh() -> Model {
+    let mut b = MeshBuilder::new();
+    let body = b.material("tanque", [0.1, 0.95, 0.85]);
+    let band = b.material("banda", [0.92, 0.97, 1.0]);
+    let valve = b.material("valvula", [0.95, 0.75, 0.2]);
+    let (v, f) = frustum(8, 0.38, 0.38, -0.5, 0.5);
+    b.convex(&v, &f, &body);
+    let (v, f) = frustum(8, 0.38, 0.0, 0.5, 0.78);
+    b.convex(&v, &f, &body);
+    let (v, f) = frustum(8, 0.38, 0.0, -0.5, -0.78);
+    b.convex(&v, &f, &body);
+    for y in [-0.3, 0.3] {
+        let (v, f) = frustum(8, 0.42, 0.42, y - 0.05, y + 0.05);
+        b.convex(&v, &f, &band);
+    }
+    let (v, f) = frustum(6, 0.08, 0.08, 0.7, 0.9);
+    b.convex(&v, &f, &valve);
     let mut model = b.finish();
     model.update_bounds();
     model

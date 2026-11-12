@@ -138,11 +138,10 @@ pub fn ending_text(summary: &EndingSummary) -> (String, Vec<String>, String) {
     };
     let total = summary.mission_seconds.max(0.0).round() as u64;
     let stats = format!(
-        "TIEMPO {:02}:{:02}  |  RECURSOS {}/{}  |  REGISTROS {}/{}",
+        "TIEMPO {:02}:{:02}  |  TANQUES DE O2 {}  |  REGISTROS {}/{}",
         total / 60,
         total % 60,
         summary.resources,
-        summary.resources_total,
         summary.logs,
         summary.logs_total
     );

@@ -100,6 +100,9 @@ pub struct ConfiguredGameOptions {
     /// Segundos que dura el tanque completo de oxigeno real (`--oxygen-seconds`); `None` deja
     /// el valor de `GameplaySettings` (420 s).
     pub oxygen_seconds: Option<f64>,
+    /// Experiencia de presentacion (por defecto en ventana): espacio procedural por sectores con
+    /// tanques visibles y marcadores, y teclas de O2 que arrastran el O2 real.
+    pub presentation: bool,
 }
 
 /// Ritmos de consumo que alterna la tecla `L`: segundos para vaciar el tanque completo.
@@ -149,6 +152,7 @@ impl From<GameOptions> for ConfiguredGameOptions {
             gameplay_feedback: false,
             oxygen_source: OxygenSource::Legacy,
             oxygen_seconds: None,
+            presentation: false,
         }
     }
 }
@@ -517,6 +521,11 @@ pub fn compose_presentation(
     }
     if layers.perception {
         apply_lucid_perception(framebuffer, world)?;
+    }
+    // Marcadores de navegacion (solo con el espacio procedural de la presentacion): despues de la
+    // percepcion para que sigan visibles con O2 bajo, antes del final.
+    if world.sectors.is_some() {
+        crate::visual::markers::draw_markers(framebuffer, world);
     }
     if let Some(seconds) = layers.ending
         && let Some(summary) = EndingSummary::from_gameplay(&world.gameplay, world.time)
@@ -920,6 +929,11 @@ pub(crate) fn advance_perception_frame_owned(
     let shown = next.advance(elapsed)?;
     *oxygen = next;
     world.publish_visual_oxygen(shown);
+    // Presentacion: con un objetivo manual (1-4, M/N), el O2 REAL sigue al mostrado. Al llegar
+    // la pantalla a negro (O2 0) el real tambien es 0 y el siguiente cuadro es la muerte.
+    if world.oxygen_keys_drive_real && world.forced_oxygen.is_some() {
+        world.gameplay.oxygen01 = shown;
+    }
     world.update_creature_reveal(elapsed);
     if body_held {
         world.update_creature_eye_follow_body_held(elapsed);
@@ -2098,6 +2112,13 @@ fn run_with_tentacle_io(
     }
     if let Some(index) = options.near {
         world.place_near(index, 25.0)?;
+    }
+    if options.presentation {
+        world.enable_sectors();
+        world.oxygen_keys_drive_real = true;
+        println!(
+            "Presentacion: espacio procedural por sectores, tanques de O2 visibles y marcadores; N/M y 1-4 arrastran el O2 real"
+        );
     }
     // Objetivo manual y O2 mostrado: arrancan EXACTAMENTE en --debug-oxygen (sin presimular).
     let mut oxygen = if perception {
