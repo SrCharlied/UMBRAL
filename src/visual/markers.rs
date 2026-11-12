@@ -150,6 +150,25 @@ pub fn draw_hud_notes(fb: &mut Framebuffer, world: &World) {
         }
         return;
     }
+    // Fuga de O2 por un choque con un asteroide (tiene prioridad sobre el aviso de recogida).
+    if world.impact_flash > 0.0 {
+        let msg = format!(
+            "-{:.0}% O2",
+            crate::scene::sectors::ASTEROID_OXYGEN_LOSS * 100.0
+        );
+        let msg_w = msg.len() * 6 * scale;
+        if (world.impact_flash * 6.0).fract() < 0.7 {
+            draw_text(
+                fb,
+                w.saturating_sub(msg_w) / 2,
+                message_y,
+                scale,
+                0xff4a3d,
+                &msg,
+            );
+        }
+        return;
+    }
     // Aviso de recogida.
     if world.pickup_flash > 0.0 {
         let gain = (world.last_pickup_gain * 100.0).round();

@@ -19,7 +19,12 @@ use umbral::{
 };
 
 fn shot(world: &World, fb: &mut Framebuffer, name: &str) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    for _ in 0..9 {
+        world.render(fb);
+    }
     let stats = world.render(fb);
+    let ms = start.elapsed().as_secs_f64() * 100.0;
     compose_presentation(
         fb,
         world,
@@ -37,7 +42,7 @@ fn shot(world: &World, fb: &mut Framebuffer, name: &str) -> Result<(), String> {
     let path = Path::new("renders/smoke").join(name);
     save_png(&path, fb)?;
     println!(
-        "{} | objetos {} | planetas errantes {} | tanques vivos {}",
+        "{} | {ms:.1} ms/cuadro (escena) | objetos {} | planetas errantes {} | tanques vivos {}",
         path.display(),
         stats.objects_submitted,
         world.sectors.as_ref().map_or(0, |f| f.planets().count()),
@@ -85,6 +90,23 @@ fn main() -> Result<(), String> {
     world.enable_sectors();
     settle(&mut world);
     shot(&world, &mut fb, "sector_lejos.png")?;
+
+    // Cinturon de asteroides del sistema, visto de canto desde fuera.
+    let belt_eye = Vec3::new(0.0, 25.0, 560.0);
+    world.ship = Ship::new(belt_eye, Vec3::new(0.25, -0.03, -1.0).normalized());
+    world.enable_sectors();
+    settle(&mut world);
+    shot(&world, &mut fb, "asteroides_cinturon.png")?;
+
+    // Baliza de registro del espacio profundo.
+    let log = umbral::scene::sectors::DEEP_LOG_POSITIONS[2];
+    world.ship = Ship::new(
+        log + Vec3::new(30.0, 10.0, 90.0),
+        Vec3::new(-0.3, -0.1, -1.0).normalized(),
+    );
+    world.enable_sectors();
+    settle(&mut world);
+    shot(&world, &mut fb, "registro_lejano.png")?;
 
     // Costo de generar al cruzar de sector (el peor caso: una cara entera de 5x5 sectores).
     let mut field = umbral::scene::sectors::SectorField::new();

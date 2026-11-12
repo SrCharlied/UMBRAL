@@ -37,6 +37,8 @@ pub enum Sfx {
     EyesOpen,
     /// Choque con un planeta: golpe sordo.
     Collision,
+    /// Choque con un asteroide (quita O2): crujido metalico y siseo de fuga.
+    AsteroidHit,
     /// Partida nueva: barrido ascendente.
     Restart,
     /// Interfaz (L, F2, silencio): clic corto.
@@ -44,7 +46,7 @@ pub enum Sfx {
 }
 
 impl Sfx {
-    pub const ALL: [Sfx; 13] = [
+    pub const ALL: [Sfx; 14] = [
         Sfx::TankPickup,
         Sfx::LogPickup,
         Sfx::Victory,
@@ -56,6 +58,7 @@ impl Sfx {
         Sfx::OxygenAlarm,
         Sfx::EyesOpen,
         Sfx::Collision,
+        Sfx::AsteroidHit,
         Sfx::Restart,
         Sfx::Blip,
     ];
@@ -74,6 +77,7 @@ impl Sfx {
             Sfx::OxygenAlarm => 0.6,
             Sfx::EyesOpen => 2.5,
             Sfx::Collision => 0.5,
+            Sfx::AsteroidHit => 1.2,
             Sfx::Restart => 1.0,
             Sfx::Blip => 0.08,
         }
@@ -202,6 +206,16 @@ impl Sfx {
             Sfx::Collision => {
                 let thud = sine(65.0 * (1.0 + decay(t, 15.0)), t) * decay(t, 9.0);
                 (thud + noise.lowpassed(0.15) * decay(t, 20.0) * 0.8) * 0.8
+            }
+            Sfx::AsteroidHit => {
+                // Golpe grave, crujido del casco (tono metalico que cae) y siseo de la fuga de O2.
+                let thud = sine(55.0 * (1.0 + 1.5 * decay(t, 14.0)), t) * decay(t, 6.0);
+                let crunch = noise.lowpassed(0.5) * attack_decay(t, 0.002, 12.0) * 1.4;
+                let metal = (sine(310.0 - 90.0 * t, t) + 0.6 * sine(467.0 - 120.0 * t, t))
+                    * 0.2
+                    * decay(t, 4.0);
+                let leak = noise.highpassed() * 0.5 * envelope(t, 0.08, 0.5, 1.2);
+                ((thud + crunch + metal + leak) * 0.8).tanh()
             }
             Sfx::Restart => {
                 let f = 200.0 + 900.0 * (t / d).powi(2);

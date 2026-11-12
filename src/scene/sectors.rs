@@ -29,7 +29,96 @@ pub const PLANET_CHANCE: f64 = 0.5;
 /// Probabilidad de un tanque suelto adicional por sector.
 pub const FREE_TANK_CHANCE: f64 = 0.35;
 
+/// Probabilidad de que un sector tenga un campo de asteroides.
+pub const ASTEROID_FIELD_CHANCE: f64 = 0.55;
+/// O2 que se pierde en cada choque con un asteroide (fuga, no dano a la nave).
+pub const ASTEROID_OXYGEN_LOSS: f64 = 0.08;
+/// Segundos separado de la misma roca para que un nuevo choque vuelva a perder O2.
+pub const ASTEROID_CONTACT_GAP: f64 = 1.0;
+/// Cinturon de asteroides del sistema: entre las orbitas de Osario (340) y Vigilia (520).
+pub const BELT_INNER: f64 = 395.0;
+pub const BELT_OUTER: f64 = 470.0;
+pub const BELT_COUNT: usize = 150;
+/// Radio libre de planetas errantes y asteroides alrededor de cada baliza de registro.
+pub const LOG_CLEARANCE: f64 = 220.0;
+
+/// Balizas de registro del espacio profundo (experiencia por defecto): a ~1800 del Sol y a
+/// ~3100 entre si, repartidas a 120 grados. La mas cercana al arranque queda detras de la nave.
+pub const DEEP_LOG_POSITIONS: [Vec3; 3] = [
+    Vec3::new(1560.0, 120.0, -900.0),
+    Vec3::new(-1560.0, -150.0, -900.0),
+    Vec3::new(0.0, 200.0, 1800.0),
+];
+
 pub type SectorKey = (i64, i64, i64);
+
+/// Asteroide estatico que gira sobre si mismo. Chocar pierde O2 (`ASTEROID_OXYGEN_LOSS`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Asteroid {
+    pub id: u64,
+    pub center: Vec3,
+    pub radius: f64,
+    /// Variante de malla (`asteroid_mesh`).
+    pub variant: usize,
+    /// Rad/s de giro propio.
+    pub spin: f64,
+}
+
+impl Asteroid {
+    pub fn transform(&self, time: f64) -> Transform {
+        let a = (self.spin * time).rem_euclid(std::f64::consts::TAU);
+        Transform {
+            position: self.center,
+            rotation: Vec3::new(a * 0.7, a, 0.0),
+            scale: Vec3::splat(self.radius),
+        }
+    }
+}
+
+/// Variantes de malla de asteroide.
+pub const ASTEROID_VARIANTS: usize = 3;
+
+/// Roca irregular: esfera de pocos anillos con los vertices desplazados de forma determinista
+/// (radio entre 0.7 y 1.0). Las normales siguen siendo radiales (sombreado suave aproximado).
+pub fn asteroid_mesh(variant: usize) -> crate::assets::obj::Model {
+    let mut model = crate::assets::primitives::uv_sphere(5, 8);
+    let seed = 0xA57E_0000 + variant as u64;
+    // Los vertices duplicados de la costura comparten direccion: se desplazan igual.
+    for v in &mut model.vertices {
+        let p = Vec3::from_array(*v);
+        let key = ((p.x * 97.0).round() as i64).wrapping_mul(73_856_093)
+            ^ ((p.y * 97.0).round() as i64).wrapping_mul(19_349_663)
+            ^ ((p.z * 97.0).round() as i64).wrapping_mul(83_492_791);
+        let k = 0.7 + 0.3 * unit(seed ^ key as u64, 1);
+        *v = [p.x * k, p.y * k * 0.85, p.z * k];
+    }
+    model.update_bounds();
+    model
+}
+
+fn near_log(p: Vec3, margin: f64) -> bool {
+    DEEP_LOG_POSITIONS
+        .iter()
+        .any(|log| (p - *log).length() < LOG_CLEARANCE + margin)
+}
+
+/// Cinturon del sistema (determinista).
+pub fn asteroid_belt() -> Vec<Asteroid> {
+    (0..BELT_COUNT)
+        .map(|i| {
+            let s = 0xBE17_0000 + i as u64;
+            let angle = std::f64::consts::TAU * (i as f64 + unit(s, 1) * 0.8) / BELT_COUNT as f64;
+            let r = BELT_INNER + (BELT_OUTER - BELT_INNER) * unit(s, 2);
+            Asteroid {
+                id: s,
+                center: Vec3::new(r * angle.cos(), (unit(s, 3) - 0.5) * 40.0, r * angle.sin()),
+                radius: 2.5 + 5.5 * unit(s, 4),
+                variant: (unit(s, 5) * ASTEROID_VARIANTS as f64) as usize % ASTEROID_VARIANTS,
+                spin: 0.1 + 0.6 * unit(s, 6),
+            }
+        })
+        .collect()
+}
 
 /// Planeta errante de un sector.
 #[derive(Debug)]
@@ -70,6 +159,7 @@ pub struct Sector {
     pub key: SectorKey,
     pub planets: Vec<SectorPlanet>,
     pub tanks: Vec<OxygenTank>,
+    pub asteroids: Vec<Asteroid>,
 }
 
 /// Sectores vivos alrededor de la nave y tanques ya recogidos.
@@ -78,11 +168,39 @@ pub struct SectorField {
     sectors: HashMap<SectorKey, Sector>,
     collected: HashSet<u64>,
     center: Option<SectorKey>,
+    /// Cinturon fijo del sistema (vacio con `Default`; `new` lo genera).
+    belt: Vec<Asteroid>,
 }
 
 impl SectorField {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            belt: asteroid_belt(),
+            ..Self::default()
+        }
+    }
+
+    /// Cinturon del sistema y asteroides de los sectores vivos.
+    pub fn asteroids(&self) -> impl Iterator<Item = &Asteroid> {
+        self.belt
+            .iter()
+            .chain(self.sectors.values().flat_map(|s| s.asteroids.iter()))
+    }
+
+    /// Como `resolve_collision`, contra los asteroides: saca `end` del primero que atraviese
+    /// y devuelve su id.
+    pub fn hit_asteroid(&self, start: Vec3, end: &mut Vec3, margin: f64) -> Option<u64> {
+        if !(start.is_finite() && end.is_finite()) {
+            return None;
+        }
+        let mut hit = None;
+        for a in self.asteroids() {
+            if let Some(pushed) = push_out(start, *end, a.center, a.radius + margin) {
+                *end = pushed;
+                hit = Some(a.id);
+            }
+        }
+        hit
     }
 
     pub fn key_of(position: Vec3) -> SectorKey {
@@ -163,35 +281,40 @@ impl SectorField {
         }
         let mut hit = false;
         for planet in self.planets() {
-            let radius = planet.radius + margin;
-            let closest = closest_point(start, *end, planet.center);
-            if (closest - planet.center).length() >= radius {
-                continue;
+            if let Some(pushed) = push_out(start, *end, planet.center, planet.radius + margin) {
+                *end = pushed;
+                hit = true;
             }
-            // Punto de entrada del segmento en la esfera (o el inicio si ya estaba dentro).
-            let delta = *end - start;
-            let rel = start - planet.center;
-            let a = delta.dot(delta);
-            let b = rel.dot(delta);
-            let c = rel.dot(rel) - radius * radius;
-            let entry = if c > 0.0 && a > 1e-12 {
-                let disc = (b * b - a * c).max(0.0);
-                let t = ((-b - disc.sqrt()) / a).clamp(0.0, 1.0);
-                start + delta * t
-            } else {
-                *end
-            };
-            let normal = (entry - planet.center).normalized();
-            let normal = if normal == Vec3::ZERO {
-                Vec3::Y
-            } else {
-                normal
-            };
-            *end = planet.center + normal * (radius + 1e-6);
-            hit = true;
         }
         hit
     }
+}
+
+/// Si el segmento `start -> end` entra en la esfera `(center, radius)`, devuelve `end` sacado a
+/// su superficie por el lado de entrada (o por donde esta, si ya empezaba dentro).
+fn push_out(start: Vec3, end: Vec3, center: Vec3, radius: f64) -> Option<Vec3> {
+    if (closest_point(start, end, center) - center).length() >= radius {
+        return None;
+    }
+    let delta = end - start;
+    let rel = start - center;
+    let a = delta.dot(delta);
+    let b = rel.dot(delta);
+    let c = rel.dot(rel) - radius * radius;
+    let entry = if c > 0.0 && a > 1e-12 {
+        let disc = (b * b - a * c).max(0.0);
+        let t = ((-b - disc.sqrt()) / a).clamp(0.0, 1.0);
+        start + delta * t
+    } else {
+        end
+    };
+    let normal = (entry - center).normalized();
+    let normal = if normal == Vec3::ZERO {
+        Vec3::Y
+    } else {
+        normal
+    };
+    Some(center + normal * (radius + 1e-6))
 }
 
 fn closest_point(start: Vec3, end: Vec3, point: Vec3) -> Vec3 {
@@ -245,6 +368,7 @@ pub fn generate(key: SectorKey) -> Sector {
         key,
         planets: Vec::new(),
         tanks: Vec::new(),
+        asteroids: Vec::new(),
     };
     if unit(seed, 1) < PLANET_CHANCE {
         let radius = 10.0 + 24.0 * unit(seed, 2);
@@ -255,7 +379,7 @@ pub fn generate(key: SectorKey) -> Sector {
                 inside(unit(seed, 4), margin) * 0.6 + SECTOR_SIZE * 0.2,
                 inside(unit(seed, 5), margin),
             );
-        if center.length() > INNER_EXCLUSION + radius {
+        if center.length() > INNER_EXCLUSION + radius && !near_log(center, radius) {
             let base = PALETTE[(unit(seed, 6) * PALETTE.len() as f64) as usize % PALETTE.len()];
             let shade = 0.8 + 0.4 * unit(seed, 7);
             let color = base.map(|c| (c * shade).clamp(0.0, 1.0));
@@ -293,12 +417,56 @@ pub fn generate(key: SectorKey) -> Sector {
             .planets
             .iter()
             .all(|p| (position - p.center).length() > p.radius + 25.0);
-        if position.length() > INNER_EXCLUSION && clear {
+        if position.length() > INNER_EXCLUSION
+            && clear
+            && !near_log(position, -LOG_CLEARANCE + 60.0)
+        {
             sector.tanks.push(OxygenTank {
                 id: seed ^ 0xF4EE,
                 position,
             });
         }
     }
+    add_asteroid_field(&mut sector, seed, origin);
     sector
+}
+
+/// Campo de asteroides de un sector: un cumulo de 5 a 14 rocas alrededor de un punto, lejos
+/// del Sol, de los planetas del sector, de sus tanques y de las balizas de registro.
+fn add_asteroid_field(sector: &mut Sector, seed: u64, origin: Vec3) {
+    let s = seed ^ 0xA57E_401D;
+    if unit(s, 1) >= ASTEROID_FIELD_CHANCE {
+        return;
+    }
+    let inside = |u: f64| 90.0 + u * (SECTOR_SIZE - 180.0);
+    let cluster = origin + Vec3::new(inside(unit(s, 2)), inside(unit(s, 3)), inside(unit(s, 4)));
+    let count = 5 + (unit(s, 5) * 10.0) as usize;
+    for i in 0..count {
+        let r = s.wrapping_add(i as u64 * 0x9E37);
+        let offset =
+            Vec3::new(unit(r, 6) - 0.5, (unit(r, 7) - 0.5) * 0.6, unit(r, 8) - 0.5) * 170.0;
+        let center = cluster + offset;
+        let radius = 3.0 + 7.0 * unit(r, 9);
+        let clear_planets = sector
+            .planets
+            .iter()
+            .all(|p| (center - p.center).length() > p.radius + radius + 30.0);
+        let clear_tanks = sector
+            .tanks
+            .iter()
+            .all(|t| (center - t.position).length() > radius + 20.0);
+        if center.length() > INNER_EXCLUSION
+            && clear_planets
+            && clear_tanks
+            && !near_log(center, radius)
+        {
+            sector.asteroids.push(Asteroid {
+                id: r ^ 0xA5,
+                center,
+                radius,
+                variant: (unit(r, 10) * ASTEROID_VARIANTS as f64) as usize % ASTEROID_VARIANTS,
+                spin: 0.1 + 0.8 * unit(r, 11),
+            });
+        }
+    }
 }

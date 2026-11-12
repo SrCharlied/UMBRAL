@@ -2,7 +2,7 @@
 pub mod collectibles;
 pub mod navigation;
 use crate::{math::Vec3, scene::solar_system::SolarSystem};
-pub use collectibles::{Collectible, NarrativeLog};
+pub use collectibles::{Collectible, NarrativeLog, WORLD_ANCHOR};
 pub use navigation::{NavigationSettings, NavigationState};
 #[derive(Clone, Debug)]
 pub struct GameplayState {

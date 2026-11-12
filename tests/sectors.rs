@@ -335,3 +335,169 @@ fn el_hud_muestra_el_oxigeno_y_el_aviso_de_recogida() {
     draw_hud_notes(&mut fb, &w);
     assert!(!fb.pixels.contains(&0xff4a3d));
 }
+
+mod lejos_y_asteroides {
+    use umbral::{
+        assets::{obj::load_model, ship_model_path},
+        math::Vec3,
+        scene::{
+            sectors::{
+                ASTEROID_OXYGEN_LOSS, BELT_INNER, BELT_OUTER, DEEP_LOG_POSITIONS, LOG_CLEARANCE,
+                SectorField, generate,
+            },
+            ship::{Ship, ShipInput},
+            world::World,
+        },
+    };
+
+    fn presentation() -> World {
+        let mut w = World::new(load_model(&ship_model_path()).unwrap(), 16.0 / 9.0).unwrap();
+        w.clear_debug_oxygen();
+        w.enable_sectors();
+        w
+    }
+
+    fn log_positions(w: &World) -> Vec<Vec3> {
+        w.gameplay
+            .logs
+            .iter()
+            .map(|l| l.anchor.position(&w.system, w.time).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn los_registros_quedan_lejos_entre_si_y_del_sol_tambien_tras_reiniciar() {
+        let mut w = presentation();
+        let logs = log_positions(&w);
+        assert_eq!(logs, DEEP_LOG_POSITIONS.to_vec());
+        for (i, a) in logs.iter().enumerate() {
+            assert!(a.length() > 1700.0, "registro {i} cerca del Sol");
+            for b in &logs[i + 1..] {
+                assert!((*a - *b).length() > 2800.0, "registros cercanos");
+            }
+        }
+        // Fijos: no se mueven con el tiempo.
+        w.time = 500.0;
+        assert_eq!(log_positions(&w), DEEP_LOG_POSITIONS.to_vec());
+        w.restart_game();
+        assert_eq!(log_positions(&w), DEEP_LOG_POSITIONS.to_vec());
+        // El juego clasico conserva los registros en los planetas.
+        let classic = World::new(load_model(&ship_model_path()).unwrap(), 1.0).unwrap();
+        assert!(
+            classic
+                .gameplay
+                .logs
+                .iter()
+                .all(|l| l.anchor.planet_index != usize::MAX)
+        );
+    }
+
+    #[test]
+    fn volar_hasta_una_baliza_lejana_recoge_el_registro() {
+        let mut w = presentation();
+        let target = DEEP_LOG_POSITIONS[2];
+        w.ship = Ship::new(target + Vec3::new(0.0, 0.0, 40.0), -Vec3::Z);
+        w.enable_sectors();
+        for _ in 0..60 {
+            w.update(
+                &ShipInput {
+                    thrust: 1.0,
+                    ..ShipInput::default()
+                },
+                0.05,
+            );
+            if w.gameplay.collected_logs == 1 {
+                break;
+            }
+        }
+        assert_eq!(w.gameplay.collected_logs, 1);
+    }
+
+    #[test]
+    fn nada_procedural_tapa_las_balizas_y_el_cinturon_respeta_las_orbitas() {
+        for log in DEEP_LOG_POSITIONS {
+            let key = SectorField::key_of(log);
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        let s = generate((key.0 + dx, key.1 + dy, key.2 + dz));
+                        for p in &s.planets {
+                            assert!((p.center - log).length() > LOG_CLEARANCE);
+                        }
+                        for a in &s.asteroids {
+                            assert!((a.center - log).length() > LOG_CLEARANCE);
+                        }
+                    }
+                }
+            }
+        }
+        let field = SectorField::new();
+        let belt: Vec<_> = field.asteroids().collect();
+        assert!(belt.len() >= 100);
+        for a in belt {
+            let r = Vec3::new(a.center.x, 0.0, a.center.z).length();
+            assert!((BELT_INNER - 1.0..=BELT_OUTER + 1.0).contains(&r));
+            // Entre Osario (340 + 9) y Vigilia (520 - 20).
+            assert!(r - a.radius > 349.0 && r + a.radius < 500.0);
+        }
+    }
+
+    #[test]
+    fn chocar_con_un_asteroide_pierde_oxigeno_una_vez_por_choque() {
+        let mut w = presentation();
+        let rock = *SectorField::new().asteroids().next().unwrap();
+        let start = rock.center + Vec3::new(0.0, 0.0, rock.radius + 30.0);
+        w.ship = Ship::new(start, -Vec3::Z);
+        w.gameplay.oxygen01 = 0.9;
+        let push = ShipInput {
+            thrust: 1.0,
+            boost: true,
+            ..ShipInput::default()
+        };
+        // 2 s empujando contra la misma roca: una sola perdida.
+        let before = w.gameplay.oxygen01;
+        for _ in 0..40 {
+            w.update(&push, 0.05);
+            let d = (w.ship.position - rock.center).length();
+            assert!(d >= rock.radius + 1.9, "atraveso el asteroide");
+        }
+        assert_eq!(w.asteroid_hits, 1, "pegado a la misma roca no pierde mas");
+        let lost = before - w.gameplay.oxygen01;
+        assert!(
+            (ASTEROID_OXYGEN_LOSS - 1e-9..ASTEROID_OXYGEN_LOSS + 0.03).contains(&lost),
+            "perdio {lost}"
+        );
+        assert!(w.impact_flash > 0.0);
+        // Se aleja mas de un segundo y vuelve a chocar: otra perdida.
+        w.ship = Ship::new(start, -Vec3::Z);
+        for _ in 0..30 {
+            w.update(&ShipInput::default(), 0.05);
+        }
+        for _ in 0..40 {
+            w.update(&push, 0.05);
+        }
+        assert_eq!(w.asteroid_hits, 2, "un choque nuevo vuelve a perder O2");
+    }
+
+    #[test]
+    fn durante_la_secuencia_del_monstruo_los_asteroides_no_danan() {
+        let mut w = presentation();
+        let rock = *SectorField::new().asteroids().next().unwrap();
+        w.ship = Ship::new(
+            rock.center + Vec3::new(0.0, 0.0, rock.radius + 20.0),
+            -Vec3::Z,
+        );
+        w.dying = true;
+        w.gameplay.oxygen01 = 0.5;
+        for _ in 0..30 {
+            w.update(
+                &ShipInput {
+                    thrust: 1.0,
+                    ..ShipInput::default()
+                },
+                0.05,
+            );
+        }
+        assert_eq!(w.asteroid_hits, 0);
+    }
+}

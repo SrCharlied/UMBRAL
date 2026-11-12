@@ -103,6 +103,8 @@ pub struct AudioSnapshot {
     /// O2 mostrado `[0, 1]`.
     pub oxygen01: f64,
     pub speed: f64,
+    /// Choques con asteroides acumulados (`World::asteroid_hits`).
+    pub asteroid_hits: u32,
 }
 
 impl AudioSnapshot {
@@ -116,6 +118,7 @@ impl AudioSnapshot {
             restart_generation: world.restart_generation,
             oxygen01: if world.dying { 0.0 } else { world.oxygen01() },
             speed: world.ship.speed,
+            asteroid_hits: world.asteroid_hits,
         }
     }
 }
@@ -183,8 +186,10 @@ impl AudioDirector {
             if prev.oxygen01 >= EYES_LEVEL && now.oxygen01 < EYES_LEVEL {
                 out.push(Sfx::EyesOpen);
             }
-            // Choque: la nave iba rapido y se detuvo de golpe sin frenar (colision).
-            if prev.speed > 25.0 && now.speed < 1.0 {
+            // Asteroide (quita O2) o choque con un planeta: la nave iba rapido y se detuvo de golpe.
+            if now.asteroid_hits > prev.asteroid_hits {
+                out.push(Sfx::AsteroidHit);
+            } else if prev.speed > 25.0 && now.speed < 1.0 {
                 out.push(Sfx::Collision);
             }
         }

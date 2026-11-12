@@ -4,7 +4,10 @@ use std::cell::{Cell, RefCell};
 
 use super::{
     camera::Camera,
-    sectors::SectorField,
+    sectors::{
+        ASTEROID_CONTACT_GAP, ASTEROID_OXYGEN_LOSS, ASTEROID_VARIANTS, DEEP_LOG_POSITIONS,
+        SectorField, asteroid_mesh,
+    },
     ship::{Ship, ShipInput, smoothing},
     solar_system::{CelestialBody, SolarSystem},
 };
@@ -61,6 +64,8 @@ pub const SPACE_COLOR: u32 = 0x03040a;
 pub const SECTOR_DRAW_DISTANCE: f64 = 2400.0;
 /// Duracion del aviso «+N% O2» tras recoger un tanque.
 pub const PICKUP_FLASH_SECONDS: f64 = 2.0;
+/// Distancia maxima de dibujo de asteroides.
+pub const ASTEROID_DRAW_DISTANCE: f64 = 1300.0;
 /// El OBJ de la nave apunta a +Z o -Z segun Blender; este giro lo alinea con -Z (D11).
 pub const SHIP_MODEL_YAW: f64 = std::f64::consts::PI;
 
@@ -139,6 +144,14 @@ pub struct World {
     /// Multiplicador del consumo de O2 con el turbo (Shift); 1 = sin castigo. La experiencia por
     /// defecto usa `BOOST_OXYGEN_DRAIN`.
     pub boost_oxygen_drain: f64,
+    /// Choques con asteroides que quitaron O2 (contador para el sonido).
+    pub asteroid_hits: u32,
+    /// Segundos que le quedan al aviso de impacto del HUD.
+    pub impact_flash: f64,
+    /// Ultimo asteroide tocado y segundos sin tocarlo: una sola perdida de O2 por choque.
+    asteroid_contact: Option<(u64, f64)>,
+    /// Mallas de asteroide (con `sectors`).
+    asteroid_models: Vec<Model>,
     /// Modelo del tanque de oxigeno (coleccionables con `sectors`).
     tank_model: Model,
 }
@@ -258,6 +271,10 @@ impl World {
             last_pickup_gain: 0.0,
             dying: false,
             boost_oxygen_drain: 1.0,
+            asteroid_hits: 0,
+            impact_flash: 0.0,
+            asteroid_contact: None,
+            asteroid_models: Vec::new(),
             tank_model: oxygen_tank_mesh(),
         };
         world.snap_camera();
@@ -309,6 +326,11 @@ impl World {
         self.pickup_flash = 0.0;
         self.last_pickup_gain = 0.0;
         self.dying = false;
+        self.impact_flash = 0.0;
+        self.asteroid_contact = None;
+        if self.sectors.is_some() {
+            self.place_deep_logs();
+        }
         self.time = 0.0;
         self.orbit_assist = false;
         self.forced_oxygen = None;
@@ -473,6 +495,10 @@ impl World {
         let (picked_before, oxygen_before) =
             (self.gameplay.collected_resources, self.gameplay.oxygen01);
         self.pickup_flash = (self.pickup_flash - dt).max(0.0);
+        self.impact_flash = (self.impact_flash - dt).max(0.0);
+        if let Some((_, apart)) = self.asteroid_contact.as_mut() {
+            *apart += dt;
+        }
         self.ship.update(input, dt);
         self.gameplay
             .navigation
@@ -556,6 +582,19 @@ impl World {
         let mut field = SectorField::new();
         field.update(self.ship.position);
         self.sectors = Some(field);
+        if self.asteroid_models.is_empty() {
+            self.asteroid_models = (0..ASTEROID_VARIANTS).map(asteroid_mesh).collect();
+        }
+        self.place_deep_logs();
+    }
+
+    /// Registros en las balizas fijas del espacio profundo (`DEEP_LOG_POSITIONS`), lejos entre
+    /// si; conservan si ya se recogieron.
+    pub fn place_deep_logs(&mut self) {
+        for (log, position) in self.gameplay.logs.iter_mut().zip(DEEP_LOG_POSITIONS) {
+            log.anchor.planet_index = crate::gameplay::WORLD_ANCHOR;
+            log.anchor.local_offset = position;
+        }
     }
 
     /// Paso de los sectores tras el movimiento de la nave desde `previous`: genera los nuevos,
@@ -570,6 +609,25 @@ impl World {
         if field.resolve_collision(previous, &mut position, self.time, ship_radius) {
             self.ship.position = position;
             self.ship.speed = 0.0;
+        }
+        // Asteroides: la nave no los atraviesa y cada choque nuevo pierde O2 (fuera de la
+        // secuencia del monstruo). Seguir pegado a la misma roca no pierde mas.
+        let mut position = self.ship.position;
+        if let Some(id) = field.hit_asteroid(previous, &mut position, ship_radius) {
+            self.ship.position = position;
+            self.ship.speed = 0.0;
+            let same_contact = self
+                .asteroid_contact
+                .is_some_and(|(last, apart)| last == id && apart < ASTEROID_CONTACT_GAP);
+            self.asteroid_contact = Some((id, 0.0));
+            let active =
+                !(self.gameplay.game_over || self.gameplay.objective_complete || self.dying);
+            if active && !same_contact {
+                self.gameplay.oxygen01 =
+                    (self.gameplay.oxygen01 - ASTEROID_OXYGEN_LOSS).clamp(0.0, 1.0);
+                self.asteroid_hits += 1;
+                self.impact_flash = PICKUP_FLASH_SECONDS;
+            }
         }
         field.update(self.ship.position);
         if self.gameplay.game_over || self.gameplay.objective_complete {
@@ -1791,7 +1849,7 @@ impl World {
                 let transform = Transform {
                     position,
                     rotation: Vec3::new(0.0, self.time * 1.5, 0.0),
-                    scale: Vec3::splat(2.8 * pulse),
+                    scale: Vec3::splat(6.0 * pulse),
                 };
                 *stats += self.draw_instance(
                     fb,
@@ -1817,6 +1875,27 @@ impl World {
         let Some(field) = &self.sectors else {
             return stats;
         };
+        // Asteroides (cinturon y campos de los sectores): roca gris parda iluminada por el Sol.
+        let rock = Material {
+            cull_backfaces: self.toggles.backface_culling,
+            ..Material::solid(0.42, 0.38, 0.33)
+        };
+        for asteroid in field.asteroids() {
+            if (asteroid.center - self.camera.position).length() > ASTEROID_DRAW_DISTANCE {
+                continue;
+            }
+            let Some(model) = self.asteroid_models.get(asteroid.variant) else {
+                continue;
+            };
+            stats += self.draw_instance(
+                fb,
+                model,
+                &asteroid.transform(self.time),
+                &rock,
+                ShaderKind::LitPlanet,
+                context,
+            );
+        }
         for planet in field.planets() {
             let distance = (planet.center - self.camera.position).length();
             if distance > SECTOR_DRAW_DISTANCE + planet.radius {

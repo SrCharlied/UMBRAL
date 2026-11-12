@@ -184,3 +184,15 @@ fn la_victoria_empieza_con_una_fanfarria_audible() {
         / n as f64;
     assert!(early.sqrt() > 0.12, "fanfarria debil: {}", early.sqrt());
 }
+
+#[test]
+fn chocar_con_un_asteroide_suena_el_impacto_y_no_el_golpe_de_planeta() {
+    let mut d = AudioDirector::new();
+    let mut s = snap();
+    s.speed = 200.0;
+    d.frame(s, &[]);
+    s.speed = 0.0;
+    s.asteroid_hits = 1;
+    s.oxygen01 = 0.92;
+    assert_eq!(d.frame(s, &[]), vec![Sfx::AsteroidHit]);
+}

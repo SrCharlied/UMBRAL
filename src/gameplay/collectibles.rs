@@ -3,6 +3,10 @@ use crate::{
     scene::solar_system::SolarSystem,
 };
 
+/// `planet_index` especial: el ancla es una posicion FIJA del mundo (`local_offset`), sin
+/// planeta (balizas del espacio profundo de la experiencia por defecto).
+pub const WORLD_ANCHOR: usize = usize::MAX;
+
 /// Ancla local al planeta: sigue tanto su orbita como su rotacion axial.
 #[derive(Clone, Debug)]
 pub struct Collectible {
@@ -15,6 +19,9 @@ impl Collectible {
     pub fn position(&self, system: &SolarSystem, time: f64) -> Option<Vec3> {
         if !time.is_finite() || !self.local_offset.is_finite() {
             return None;
+        }
+        if self.planet_index == WORLD_ANCHOR {
+            return Some(self.local_offset);
         }
         let body = system.bodies.get(self.planet_index)?;
         let position = body.position(time)
