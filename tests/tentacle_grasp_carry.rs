@@ -1231,23 +1231,80 @@ fn fix01_shared_raw_masked_and_composed_overflow_are_atomic() {
             assert!(carry.arm().map(|(v, n)| (v.to_vec(), n.to_vec())) == arm);
         }
     }
-    // Finite raw angular control whose composed physics overflows must not be masked into acceptance.
+    // CORRECTION03 (Charlie: se CONSERVA el recorte de controles de Persona2). Un control angular finito
+    // extremo ya no puede desbordar `Ship::update`: satura en [-1, 1], asi que el desbordamiento compuesto
+    // que esperaba este caso dejo de existir y NO se fabrica. Se prueba la saturacion coherente con la
+    // nave real y que, con el vuelo bloqueado, el cuadro es ACEPTADO e IGUAL al cuadro neutro de un estado
+    // gemelo determinista (la mascara no cambia nave, camara, O2, captura, vista ni brazo).
+    let saturated = |yaw: f64| {
+        let mut ship = g.world.ship;
+        ship.update(
+            &ShipInput {
+                yaw,
+                ..ShipInput::default()
+            },
+            DT,
+        );
+        format!("{ship:?}")
+    };
+    assert_eq!(
+        saturated(f64::MAX),
+        saturated(1.0),
+        "f64::MAX no satura como +1"
+    );
+    assert_eq!(
+        saturated(f64::MIN),
+        saturated(-1.0),
+        "f64::MIN no satura como -1"
+    );
+    assert_ne!(
+        saturated(1.0),
+        saturated(0.0),
+        "control de saturacion sin efecto"
+    );
     let mut controls = neutral();
     controls.ship.yaw = f64::MAX;
     controls.solar.follow = true;
-    let before = snapshot(&g, &carry);
-    assert!(
-        advance_capture_frame(
-            &mut g.world,
-            &mut g.game,
-            &mut g.oxygen,
-            &mut carry,
-            controls,
-            DT
-        )
-        .is_err()
+    fixture!(twin, twin_carry, true);
+    to_lock(&mut twin, &mut twin_carry);
+    assert_eq!(
+        snapshot(&twin, &twin_carry),
+        snapshot(&g, &carry),
+        "precondicion: gemelo determinista distinto"
     );
-    assert_eq!(snapshot(&g, &carry), before);
+    let mut neutral_follow = neutral();
+    neutral_follow.solar.follow = true;
+    let saturated_frame = advance_capture_frame(
+        &mut g.world,
+        &mut g.game,
+        &mut g.oxygen,
+        &mut carry,
+        controls,
+        DT,
+    );
+    let neutral_frame = advance_capture_frame(
+        &mut twin.world,
+        &mut twin.game,
+        &mut twin.oxygen,
+        &mut twin_carry,
+        neutral_follow,
+        DT,
+    );
+    let (saturated_frame, neutral_frame) = (saturated_frame.unwrap(), neutral_frame.unwrap());
+    assert_eq!(
+        format!("{:?}", saturated_frame.effective_ship),
+        format!("{:?}", ShipInput::default()),
+        "el bloqueo no enmascaro el control saturado"
+    );
+    assert_eq!(
+        format!("{:?}", saturated_frame.status),
+        format!("{:?}", neutral_frame.status)
+    );
+    assert_eq!(snapshot(&g, &carry), snapshot(&twin, &twin_carry));
+    assert!(
+        carry.arm().map(|(v, n)| (v.to_vec(), n.to_vec()))
+            == twin_carry.arm().map(|(v, n)| (v.to_vec(), n.to_vec()))
+    );
     // Existing ordinary finite out-of-unit controls remain legal (no new clamp/restriction).
     controls.ship.yaw = 2.0;
     assert!(
@@ -1261,4 +1318,306 @@ fn fix01_shared_raw_masked_and_composed_overflow_are_atomic() {
         )
         .is_ok()
     );
+}
+
+/// CORRECTION03 (USER_DECISIONS: sin O2 real o victoria congela nave y captura hasta Shift+R): el cuadro
+/// COMPARTIDO del arrastre tampoco aplica teclas solares, O2, X/T ni avanza el arrastre en terminal, y solo
+/// congela un World ENLAZADO (identidad exacta, no geometria).
+#[test]
+#[ignore = "assets privados; correction03 terminal shared carry frame"]
+fn correction03_shared_carry_terminal_freezes_and_validates_identity() {
+    fixture!(g, carry, true);
+    to_lock(&mut g, &mut carry);
+    for _ in 0..40 {
+        step(&mut g, &mut carry, neutral(), DT);
+    }
+    let snapshot = |g: &Game, c: &CaptureCarry| {
+        format!(
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+            g.world.ship,
+            g.world.camera,
+            (g.oxygen.shown(), g.oxygen.target()),
+            c.status(),
+            g.game.view(),
+            (g.world.time, g.world.debug_oxygen01),
+            (
+                g.world.creature_horizontal_follow(),
+                g.world.creature_eye_target()
+            ),
+            c.arm().map(|(v, n)| (v.to_vec(), n.to_vec()))
+        )
+    };
+    let everything = FrameControls {
+        ship: ShipInput {
+            thrust: 1.0,
+            yaw: 1.0,
+            pitch: 1.0,
+            roll: 1.0,
+            boost: true,
+        },
+        oxygen: OxygenKeys {
+            preset: Some(1.0),
+            increase: true,
+            decrease: false,
+        },
+        solar: SolarKeys {
+            reset: true,
+            frontal: true,
+            oblique: true,
+            follow: true,
+            target: true,
+        },
+        preview: PreviewKeys {
+            request: true,
+            reset: true,
+        },
+    };
+    assert!(carry.locks_flight(), "precondicion: captura viva");
+    g.world.gameplay.game_over = true;
+    let before = snapshot(&g, &carry);
+    for _ in 0..5 {
+        let out = advance_capture_frame(
+            &mut g.world,
+            &mut g.game,
+            &mut g.oxygen,
+            &mut carry,
+            everything,
+            DT,
+        )
+        .unwrap();
+        assert!(out.status.is_ok());
+    }
+    assert_eq!(
+        snapshot(&g, &carry),
+        before,
+        "terminal avanzo el cuadro del arrastre"
+    );
+    // Criatura ajena de geometria identica: Err sin efectos (no se devuelve congelado).
+    let mut model = load_model(&env("UMBRAL_CAPTURE_CREATURE_OBJ")).unwrap();
+    model
+        .material_libraries
+        .push("correction03-foreign-identity.mtl".into());
+    let alien = StaticCreature::new(
+        model,
+        umbral::renderer::texture::Texture::load_png(&env("UMBRAL_CREATURE_TEXTURE")).unwrap(),
+        solar_creature_placement(&g.world).unwrap(),
+    )
+    .unwrap();
+    let _foreign = SolarGame::start(&mut g.world, alien).unwrap();
+    g.world.gameplay.game_over = true;
+    let before = snapshot(&g, &carry);
+    assert!(
+        advance_capture_frame(
+            &mut g.world,
+            &mut g.game,
+            &mut g.oxygen,
+            &mut carry,
+            neutral(),
+            DT
+        )
+        .is_err(),
+        "terminal del arrastre congelo una identidad ajena"
+    );
+    assert_eq!(snapshot(&g, &carry), before);
+}
+
+/// CORRECTION04 (RUNTIME-TERMINAL-CARRY-01): el terminal se ALCANZA durante el tick REAL de este cuadro (no
+/// preinyectado). Despues de ese tick el arrastre no debe avanzar reloj/pose/malla ni aceptar X hasta Shift+R.
+mod correction04_terminal_reached_during_tick {
+    use super::*;
+
+    fn carry_view(c: &CaptureCarry) -> String {
+        format!(
+            "{:?}|{:?}|{}",
+            c.status(),
+            c.arm().map(|(v, n)| (v.to_vec(), n.to_vec())),
+            c.locks_flight()
+        )
+    }
+
+    /// Un cuadro compartido real con el terminal alcanzado por `reach`; devuelve los defectos observados.
+    fn frame_reaching_terminal(x: bool, reach: fn(&mut Game), victory: bool) -> Vec<String> {
+        fixture!(g, carry, true);
+        to_lock(&mut g, &mut carry);
+        for _ in 0..40 {
+            step(&mut g, &mut carry, neutral(), DT);
+        }
+        assert!(
+            carry.locks_flight()
+                && !g.world.gameplay.game_over
+                && !g.world.gameplay.objective_complete,
+            "precondicion: captura viva y partida activa"
+        );
+        reach(&mut g);
+        assert!(
+            !g.world.gameplay.game_over && !g.world.gameplay.objective_complete,
+            "precondicion: el terminal NO esta preinyectado"
+        );
+        let before = carry_view(&carry);
+        let ship = format!("{:?}", g.world.ship);
+        let controls = FrameControls {
+            preview: PreviewKeys {
+                request: false,
+                reset: x,
+            },
+            ..neutral()
+        };
+        let out = advance_capture_frame(
+            &mut g.world,
+            &mut g.game,
+            &mut g.oxygen,
+            &mut carry,
+            controls,
+            DT,
+        )
+        .unwrap();
+        let reached = if victory {
+            g.world.gameplay.objective_complete
+        } else {
+            g.world.gameplay.game_over && g.world.gameplay.oxygen01 <= 0.0
+        };
+        assert!(
+            reached,
+            "precondicion: el tick REAL alcanzo el terminal (victory={victory})"
+        );
+        let mut defects = Vec::new();
+        if carry_view(&carry) != before {
+            defects.push(format!(
+                "x={x} victory={victory}: el arrastre cambio reloj/fase/malla/bloqueo tras el tick terminal"
+            ));
+        }
+        if !carry.locks_flight() {
+            defects.push(format!(
+                "x={x} victory={victory}: X/arrastre libero la nave tras el terminal"
+            ));
+        }
+        if !victory && format!("{:?}", g.world.ship) != ship {
+            defects.push(format!(
+                "x={x}: la pose de la nave cambio tras el tick que agoto el O2"
+            ));
+        }
+        if out.status.is_err() {
+            defects.push(format!(
+                "x={x} victory={victory}: cuadro rechazado {:?}",
+                out.status
+            ));
+        }
+        // El cuadro siguiente (ya terminal) sigue congelado por la guarda existente.
+        let after = carry_view(&carry);
+        step(&mut g, &mut carry, controls, DT);
+        if carry_view(&carry) != after {
+            defects.push(format!(
+                "x={x} victory={victory}: el cuadro terminal siguiente avanzo"
+            ));
+        }
+        defects
+    }
+
+    fn deplete_real_oxygen(g: &mut Game) {
+        // Reserva real positiva menor que el consumo de UN tick de DT con los ajustes normales.
+        g.world.gameplay.oxygen01 = g.world.gameplay.settings.drain_per_second * DT / 2.0;
+    }
+
+    fn reach_sun_with_three_logs(g: &mut Game) {
+        // Control minimo valido de victoria: los tres registros ya reunidos y la llegada al Sol en este tick.
+        g.world.gameplay.collected_logs = 3;
+        g.world.gameplay.settings.sun_arrival_gap = 1.0e9;
+    }
+
+    #[test]
+    #[ignore = "assets privados; correction04 oxygen death reached during the real tick"]
+    fn correction04_oxygen_death_during_the_tick_freezes_the_carry_neutral_and_x() {
+        let defects: Vec<String> = [false, true]
+            .into_iter()
+            .flat_map(|x| frame_reaching_terminal(x, deplete_real_oxygen, false))
+            .collect();
+        assert!(defects.is_empty(), "{defects:#?}");
+    }
+
+    #[test]
+    #[ignore = "assets privados; correction04 victory reached during the real tick"]
+    fn correction04_victory_during_the_tick_freezes_the_carry_neutral_and_x() {
+        let defects: Vec<String> = [false, true]
+            .into_iter()
+            .flat_map(|x| frame_reaching_terminal(x, reach_sun_with_three_logs, true))
+            .collect();
+        assert!(defects.is_empty(), "{defects:#?}");
+    }
+}
+
+/// CORRECTION05 (RUNTIME-TERMINAL-CARRY-IDENTITY-02): el retorno terminal TRAS el tick no puede aceptar una
+/// identidad ajena que la guarda terminal previa rechaza. La identidad se comprueba ANTES de cualquier efecto
+/// del cuadro (vista solar, consumo de O2, reloj): Err atomico, sin tick consumido.
+mod correction05_terminal_tick_identity {
+    use super::*;
+
+    fn world_view(g: &Game, c: &CaptureCarry) -> String {
+        format!(
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+            g.world.ship,
+            g.world.camera,
+            (g.oxygen.shown(), g.oxygen.target()),
+            g.game.view(),
+            (
+                g.world.time,
+                g.world.debug_oxygen01,
+                g.world.forced_oxygen,
+                g.world.gameplay.oxygen01
+            ),
+            (
+                g.world.gameplay.game_over,
+                g.world.gameplay.objective_complete
+            ),
+            (
+                g.world.creature_horizontal_follow(),
+                g.world.creature_eye_target()
+            ),
+            c.status(),
+            c.arm().map(|(v, n)| (v.to_vec(), n.to_vec()))
+        )
+    }
+
+    #[test]
+    #[ignore = "assets privados; correction05 foreign identity before the terminal tick"]
+    fn correction05_foreign_identity_is_rejected_before_the_tick_that_would_end_the_game() {
+        fixture!(g, carry, true);
+        to_lock(&mut g, &mut carry);
+        for _ in 0..40 {
+            step(&mut g, &mut carry, neutral(), DT);
+        }
+        assert!(carry.locks_flight(), "precondicion: captura viva");
+        // Criatura ajena de geometria identica (como correction03_shared_carry_terminal_...).
+        let mut model = load_model(&env("UMBRAL_CAPTURE_CREATURE_OBJ")).unwrap();
+        model
+            .material_libraries
+            .push("correction05-foreign-identity.mtl".into());
+        let alien = StaticCreature::new(
+            model,
+            umbral::renderer::texture::Texture::load_png(&env("UMBRAL_CREATURE_TEXTURE")).unwrap(),
+            solar_creature_placement(&g.world).unwrap(),
+        )
+        .unwrap();
+        let _foreign = SolarGame::start(&mut g.world, alien).unwrap();
+        // Terminal NO preinyectado: reserva real positiva menor que el consumo de este tick.
+        g.world.gameplay.game_over = false;
+        g.world.gameplay.objective_complete = false;
+        g.world.gameplay.oxygen01 = g.world.gameplay.settings.drain_per_second * DT / 2.0;
+        let before = world_view(&g, &carry);
+        let result = advance_capture_frame(
+            &mut g.world,
+            &mut g.game,
+            &mut g.oxygen,
+            &mut carry,
+            neutral(),
+            DT,
+        );
+        let after = world_view(&g, &carry);
+        let ended = g.world.gameplay.game_over;
+        assert!(
+            result.is_err() && after == before,
+            "identidad ajena aceptada o tick consumido antes de rechazarla: ok={} game_over_tras_cuadro={ended} sin_efectos={}",
+            result.is_ok(),
+            after == before
+        );
+    }
 }

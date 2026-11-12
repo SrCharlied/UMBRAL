@@ -40,8 +40,10 @@ fn el_render_legado_de_la_nave_coincide_pixel_a_pixel_con_el_baseline() {
         .flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8])
         .collect();
     let differing: Vec<usize> = actual
-        .chunks_exact(3)
-        .zip(expected.chunks_exact(3))
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(expected.as_chunks::<3>().0.iter())
         .enumerate()
         .filter(|(_, (a, e))| a != e)
         .map(|(index, _)| index)

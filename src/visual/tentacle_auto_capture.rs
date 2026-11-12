@@ -19,7 +19,7 @@
 #![allow(clippy::needless_range_loop)]
 
 use crate::{
-    app::{MAX_PHYSICS_DT, advance_perception_frame},
+    app::{MAX_PHYSICS_DT, advance_perception_frame_owned},
     math::{Mat4, Vec3},
     scene::{
         ship::{Ship, ShipInput},
@@ -108,6 +108,8 @@ fn free_ship(world: &mut World) {
     ship.orientation = world.ship.orientation;
     ship.settings = world.ship.settings;
     world.ship = ship;
+    world.gameplay.navigation.gravity_velocity = Vec3::ZERO;
+    world.gameplay.navigation.assisted_planet = None;
 }
 
 /// Captura automatica: posee la cadena aprobada (preview C dentro del arrastre, siempre habilitado).
@@ -118,6 +120,7 @@ pub struct AutoCapture<'c, 'p> {
     /// El episodio de la preview sigue vivo pero la nave ya se solto (bloqueo rechazado).
     detached: bool,
     status: AutoStatus,
+    restart_generation: u64,
 }
 
 impl<'c, 'p> AutoCapture<'c, 'p> {
@@ -138,6 +141,7 @@ impl<'c, 'p> AutoCapture<'c, 'p> {
             pin: None,
             detached: false,
             status,
+            restart_generation: 0,
         })
     }
 
@@ -159,10 +163,29 @@ impl<'c, 'p> AutoCapture<'c, 'p> {
         dt: f64,
         emergency: bool,
     ) -> Result<AutoStatus, String> {
+        self.frame_owned(world, dt, emergency, false)
+    }
+
+    fn frame_owned(
+        &mut self,
+        world: &mut World,
+        dt: f64,
+        emergency: bool,
+        defer_oxygen: bool,
+    ) -> Result<AutoStatus, String> {
+        if world.gameplay.game_over || world.gameplay.objective_complete {
+            self.carry.validate_frozen(world, dt)?;
+            return Ok(self.status());
+        }
+        if self.restart_generation != world.restart_generation {
+            self.carry.validate_frozen(world, dt)?;
+            self.restart_episode(world)?;
+        }
         // La cadena rechaza dt/identidad sin mutarse. El pin previo tambien debe
         // ser transaccional: restaurar TODOS los campos de nave y camara en Err.
         let prior_ship = world.ship;
         let prior_camera = world.camera;
+        let prior_navigation = world.gameplay.navigation.clone();
         if let Some((position, orientation)) = self.pin {
             // Referencia cinematica del cierre: la pose capturada EXACTA (la fisica neutra no la cambia).
             world.commit_captured_ship_pose(position, orientation)?;
@@ -173,14 +196,19 @@ impl<'c, 'p> AutoCapture<'c, 'p> {
         );
         let hidden = world.solar_reveal_alphas().is_some_and(|a| a.eye <= 0.0);
         let rearm = observing && hidden && !emergency;
-        let st = match self.carry.frame_on_contact(world, dt, emergency || rearm) {
-            Ok(st) => st,
-            Err(error) => {
-                world.ship = prior_ship;
-                world.camera = prior_camera;
-                return Err(error);
-            }
-        };
+        let st =
+            match self
+                .carry
+                .frame_on_contact_owned(world, dt, emergency || rearm, defer_oxygen)
+            {
+                Ok(st) => st,
+                Err(error) => {
+                    world.ship = prior_ship;
+                    world.camera = prior_camera;
+                    world.gameplay.navigation = prior_navigation;
+                    return Err(error);
+                }
+            };
         let mut events = Vec::new();
         for e in &st.events {
             match e {
@@ -261,11 +289,49 @@ impl<'c, 'p> AutoCapture<'c, 'p> {
             }
         }
         self.status.phase = self.phase();
+        if events.iter().any(|e| matches!(e, AutoEvent::Released(_))) {
+            free_ship(world);
+        }
         self.status.events = events;
         self.status.body_held = self.pin.is_some();
         self.status.carry = st;
         self.status.frame += 1;
         Ok(self.status.clone())
+    }
+
+    fn restart_episode(&mut self, world: &mut World) -> Result<(), String> {
+        let (azimuth, distance, height) = crate::visual::solar_game::SolarView::Frontal.profile();
+        world.place_solar_reveal_camera(azimuth, distance, height)?;
+        self.carry.restart_game(world)?;
+        self.pin = None;
+        self.detached = false;
+        self.status = AutoStatus {
+            phase: AutoPhase::Pursuit,
+            events: Vec::new(),
+            frame: 0,
+            contact_frame: None,
+            contact_pose: None,
+            body_held: false,
+            carry: self.carry.status(),
+        };
+        self.restart_generation = world.restart_generation;
+        Ok(())
+    }
+
+    /// Reaccion unica posterior a la recogida autoritativa, sin cuadro sintetico.
+    fn react_to_oxygen(&mut self, world: &mut World) -> Result<(), String> {
+        if self.flight_locked() && world.debug_oxygen01 > 0.15 {
+            self.carry.react_to_oxygen(world)?;
+            self.release_pin(world);
+            free_ship(world);
+            self.status.phase = self.phase();
+            self.status.body_held = false;
+            self.status.carry = self.carry.status();
+            self.status
+                .events
+                .push(AutoEvent::Released(ReleaseCause::OxygenRecovered));
+        }
+        Ok(())
     }
 
     /// Suelta la nave del cierre (misma pose, sin inercia); `false` si no estaba atrapada por el cierre.
@@ -408,26 +474,6 @@ pub struct AutoFrame {
     pub aborted: bool,
 }
 
-/// `advance_perception_frame` con el cuerpo inmovil (cierre B1/P1): mismo O2 (copia validada), misma fisica
-/// y revelacion; la mirada avanza con `World::update_creature_eye_follow_body_held`.
-fn advance_perception_frame_body_held(
-    world: &mut World,
-    oxygen: &mut OxygenTransition,
-    keys: OxygenKeys,
-    input: &ShipInput,
-    elapsed: f64,
-) -> Result<(), String> {
-    let mut next = *oxygen;
-    next.press(keys)?;
-    let shown = next.advance(elapsed)?;
-    *oxygen = next;
-    world.debug_oxygen01 = shown;
-    world.update(input, elapsed.min(MAX_PHYSICS_DT));
-    world.update_creature_reveal(elapsed);
-    world.update_creature_eye_follow_body_held(elapsed);
-    Ok(())
-}
-
 /// Cuadro COMPARTIDO por el bucle principal (ventana y replay) y las pruebas: preflight numerico (el mismo
 /// RUNTIME01 aprobado) -> teclas solares (sin R/7/8 con la nave capturada) -> World con la entrada EFECTIVA
 /// y los segundos reales (O2 incluido; cuerpo inmovil durante el cierre) -> captura automatica con
@@ -473,7 +519,42 @@ pub fn advance_auto_capture_frame(
     {
         return Err("composicion numerica del vuelo no finita o degenerada; nada cambia".into());
     }
+    let frozen_dt = elapsed.min(MAX_PHYSICS_DT);
+    // CORRECTION05: identidad EXACTA (inmutable) ANTES de reinicio, teclas solares, tick, O2 o captura: el tick
+    // puede alcanzar el terminal y los retornos `frozen` posteriores no deben aceptar una criatura PRESENTE ajena.
+    // Sin criatura (escena perdida) se conserva el escape aprobado: `abort` explicito sin permalock.
+    if world.creature().is_some() {
+        auto.carry.validate_frozen(world, frozen_dt)?;
+    }
+    if auto.restart_generation != world.restart_generation {
+        // CORRECTION03: la MISMA identidad exacta y preflight que `frame_owned` ANTES de cualquier
+        // mutacion; un World con criatura ajena no se reenlaza en silencio (nada cambia en Err).
+        auto.carry.validate_frozen(world, frozen_dt)?;
+        // New game is not X/release: discard the old contact and reset the accepted chain.
+        game.apply(
+            world,
+            SolarKeys {
+                reset: true,
+                ..SolarKeys::default()
+            },
+        )?;
+        auto.restart_episode(world)?;
+        *oxygen = OxygenTransition::new(world.gameplay.oxygen01)?;
+    }
     let locked = auto.flight_locked();
+    let frozen = |auto: &AutoCapture| AutoFrame {
+        effective_ship: ShipInput::default(),
+        solar_applied: SolarKeys::default(),
+        solar_blocked: controls.solar.reset || controls.solar.frontal || controls.solar.oblique,
+        body_held: auto.holds_body(),
+        status: Ok(auto.status()),
+        aborted: false,
+    };
+    if world.gameplay.game_over || world.gameplay.objective_complete {
+        // CORRECTION03: terminal (tambien antes del primer cuadro) congela solo un World ENLAZADO.
+        auto.carry.validate_frozen(world, frozen_dt)?;
+        return Ok(frozen(auto));
+    }
     let mut solar = controls.solar;
     let solar_blocked = locked && (solar.reset || solar.frontal || solar.oblique);
     if locked {
@@ -486,18 +567,113 @@ pub fn advance_auto_capture_frame(
     };
     game.apply(world, solar)?;
     let body_held = auto.holds_body();
-    if body_held {
-        advance_perception_frame_body_held(
+    let path_start = world.ship.position;
+    let path_time = world.time;
+    if locked {
+        world.update_with_pose_owner(&effective_ship, elapsed.min(MAX_PHYSICS_DT), true);
+        if world.gameplay.game_over || world.gameplay.objective_complete {
+            return Ok(frozen(auto));
+        }
+        // Approved coupling: body follows the current pre-carry target ONCE, then carry
+        // composes against that body. This step does not read oxygen. Never move body again
+        // after the authoritative ship commit (which would break the rigid grip).
+        if body_held {
+            world.update_creature_eye_follow_body_held(elapsed);
+        } else {
+            world.update_creature_eye_follow(elapsed);
+        }
+    } else {
+        advance_perception_frame_owned(
             world,
             oxygen,
             controls.oxygen,
             &effective_ship,
             elapsed,
+            false,
+            false,
         )?;
-    } else {
-        advance_perception_frame(world, oxygen, controls.oxygen, &effective_ship, elapsed)?;
     }
-    let status = auto.frame(world, elapsed.min(MAX_PHYSICS_DT), controls.emergency);
+    if world.gameplay.game_over || world.gameplay.objective_complete {
+        return Ok(frozen(auto));
+    }
+    // A recovery already caused by the command/consumption must release at the old pose
+    // (the approved no-teleport contract). A pickup-caused recovery can only be decided
+    // AFTER the authoritative carry path. This probe has no publication or side effects.
+    let transition = |world: &World| -> Result<OxygenTransition, String> {
+        let mut next = *oxygen;
+        next.press(controls.oxygen)?;
+        let override_value = if controls.oxygen.preset.is_some()
+            || controls.oxygen.increase
+            || controls.oxygen.decrease
+        {
+            Some(next.target())
+        } else {
+            world.forced_oxygen
+        };
+        next.press(OxygenKeys {
+            preset: Some(override_value.unwrap_or(world.gameplay.oxygen01)),
+            ..OxygenKeys::default()
+        })?;
+        next.advance(elapsed)?;
+        Ok(next)
+    };
+    let recovery_known = locked && transition(world)?.shown() > 0.15;
+    let mut status;
+    if recovery_known {
+        // No carry integration can occur: the FINAL shown value is already above threshold.
+        // The stationary path is authoritative, not a provisional second collection.
+        world
+            .gameplay
+            .collect_along(path_start, path_start, &world.system, path_time, world.time);
+        let next = transition(world)?;
+        world.publish_visual_oxygen(next.shown());
+        if controls.oxygen.preset.is_some() || controls.oxygen.increase || controls.oxygen.decrease
+        {
+            world.forced_oxygen = Some(next.target());
+        }
+        *oxygen = next;
+        if world.gameplay.objective_complete {
+            return Ok(frozen(auto));
+        }
+        status = auto.frame_owned(
+            world,
+            elapsed.min(MAX_PHYSICS_DT),
+            controls.emergency,
+            false,
+        );
+    } else {
+        status = auto.frame_owned(
+            world,
+            elapsed.min(MAX_PHYSICS_DT),
+            controls.emergency,
+            locked,
+        );
+        if locked && status.is_ok() {
+            world.gameplay.collect_along(
+                path_start,
+                world.ship.position,
+                &world.system,
+                path_time,
+                world.time,
+            );
+            let next = transition(world)?;
+            world.publish_visual_oxygen(next.shown());
+            if controls.oxygen.preset.is_some()
+                || controls.oxygen.increase
+                || controls.oxygen.decrease
+            {
+                world.forced_oxygen = Some(next.target());
+            }
+            *oxygen = next;
+            if !world.gameplay.objective_complete {
+                auto.react_to_oxygen(world)?;
+            }
+            status = Ok(auto.status());
+        }
+    }
+    if locked && status.is_ok() && !world.gameplay.objective_complete {
+        world.update_creature_reveal(elapsed);
+    }
     let aborted = status.is_err() && (auto.flight_locked() || auto.carry().has_carry_layer());
     if let (true, Err(e)) = (aborted, &status) {
         auto.abort(world, e);

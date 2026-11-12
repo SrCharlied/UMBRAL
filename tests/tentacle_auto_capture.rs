@@ -1088,3 +1088,98 @@ fn a10_characterization_gesture_phases_match_manual_route_with_declared_time_ali
 
 #[path = "support/parent_mech_atomic.rs"]
 mod parent_mech_atomic;
+
+/// CORRECTION05 (API defensiva, extension autorizada): el MISMO cuadro compartido no debe consumir el tick que
+/// alcanza el terminal y devolver `frozen` con una criatura PRESENTE ajena (misma geometria, otra identidad).
+/// No afirma que un jugador cambie la criatura en partida: la fuente es `World::set_creature` publico.
+mod correction05_auto_terminal_tick_identity {
+    use super::*;
+
+    fn snapshot(g: &Game, auto: &AutoCapture) -> String {
+        format!(
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+            g.world.ship,
+            g.world.camera,
+            (g.oxygen.shown(), g.oxygen.target()),
+            g.game.view(),
+            (
+                g.world.time,
+                g.world.debug_oxygen01,
+                g.world.forced_oxygen,
+                g.world.gameplay.oxygen01
+            ),
+            (
+                g.world.gameplay.game_over,
+                g.world.gameplay.objective_complete
+            ),
+            (
+                g.world.creature_horizontal_follow(),
+                g.world.creature_eye_target()
+            ),
+            auto.status(),
+            auto.body_override().map(|b| b.model.vertices.clone())
+        )
+    }
+
+    /// `captured`: cierre con la nave capturada (retorno tras `update_with_pose_owner`); si no, persecucion
+    /// libre (retorno tras `advance_perception_frame_owned`). Reserva real de O2 menor que el consumo del tick.
+    fn check(captured: bool) {
+        fixture!(g, auto);
+        if captured {
+            into_closure(&mut g, &mut auto, 30);
+            assert!(auto.flight_locked(), "precondicion: nave capturada");
+        } else {
+            for _ in 0..3 {
+                step(&mut g, &mut auto, controls(spin(), None), DT);
+            }
+            assert!(
+                !auto.flight_locked() && auto.status().phase == AutoPhase::Pursuit,
+                "precondicion: persecucion libre"
+            );
+        }
+        let placement = g.world.creature().unwrap().placement();
+        let mut model = load_model(&env("UMBRAL_CAPTURE_CREATURE_OBJ")).unwrap();
+        model
+            .material_libraries
+            .push("correction05-auto-foreign-identity.mtl".into());
+        let texture =
+            umbral::renderer::texture::Texture::load_png(&env("UMBRAL_CREATURE_TEXTURE")).unwrap();
+        let alien = StaticCreature::new(model, texture, placement).unwrap();
+        ok(g.world.set_creature(alien), "reemplazo publico de escena");
+        g.world.gameplay.game_over = false;
+        g.world.gameplay.objective_complete = false;
+        g.world.gameplay.oxygen01 = g.world.gameplay.settings.drain_per_second * DT / 2.0;
+        let before = snapshot(&g, &auto);
+        let result = advance_auto_capture_frame(
+            &mut g.world,
+            &mut g.game,
+            &mut g.oxygen,
+            &mut auto,
+            controls(escape(), None),
+            DT,
+        );
+        let unchanged = snapshot(&g, &auto) == before;
+        let ended = g.world.gameplay.game_over;
+        println!(
+            "CORRECTION05_AUTO captured={captured} rejected={} game_over={ended} unchanged={unchanged}",
+            result.is_err()
+        );
+        assert!(
+            result.is_err() && unchanged,
+            "AUTO captured={captured}: identidad ajena aceptada o tick consumido antes de rechazarla: ok={} game_over_tras_cuadro={ended} sin_efectos={unchanged}",
+            result.is_ok()
+        );
+    }
+
+    #[test]
+    #[ignore = "assets privados; correction05 AUTO foreign identity before the terminal tick"]
+    fn correction05_auto_captured_foreign_identity_is_rejected_before_the_terminal_tick() {
+        check(true);
+    }
+
+    #[test]
+    #[ignore = "assets privados; correction05 AUTO foreign identity before the terminal tick"]
+    fn correction05_auto_pursuit_foreign_identity_is_rejected_before_the_terminal_tick() {
+        check(false);
+    }
+}

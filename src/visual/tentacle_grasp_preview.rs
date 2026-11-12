@@ -503,13 +503,13 @@ impl<'c, 'p> GraspPreview<'c, 'p> {
                 if keys.request {
                     events.push(PreviewEvent::RequestIgnored);
                 }
-                self.handoff_frame(world, dt, handoff, current, &mut events);
+                self.handoff_frame(world, dt, handoff, current, &mut events, false);
             }
             Stage::Closure(closure) => {
                 if keys.request {
                     events.push(PreviewEvent::RequestIgnored);
                 }
-                self.closure_frame(world, dt, closure, current, &mut events);
+                self.closure_frame(world, dt, closure, current, &mut events, false);
             }
             Stage::Stopped => {
                 if keys.request {
@@ -524,6 +524,53 @@ impl<'c, 'p> GraspPreview<'c, 'p> {
         self.status.quiet_frames = quiet;
         self.status.frame += 1;
         Ok(self.status.clone())
+    }
+
+    pub(crate) fn validate_frozen(&self, world: &World, dt: f64) -> Result<(), String> {
+        if !(dt.is_finite() && (0.0..=MAX_PURSUIT_DT).contains(&dt)) {
+            return Err("dt invalido; nada cambia".into());
+        }
+        let (ship, body) = study_transforms(world)?;
+        if !ship
+            .m
+            .iter()
+            .chain(body.m.iter())
+            .flatten()
+            .all(|v| v.is_finite())
+        {
+            return Err("transform no finito; nada cambia".into());
+        }
+        if let Some(e) = &self.episode {
+            if !world
+                .creature()
+                .is_some_and(|c| same_model(&e.source_model, c.model()))
+                || !world
+                    .staged_creature_parts()
+                    .is_some_and(|p| same_model(&e.source_body, p.body()))
+            {
+                return Err("criatura o particion distintas del episodio; nada cambia".into());
+            }
+            world.validate_solar_body_override(&SolarBodyOverride {
+                model: &e.layer,
+                extra_bounds_obj: e.bounds,
+            })?;
+        } else {
+            // Persecucion: la MISMA identidad exacta del bind que exige `SpatialPursuit::step`
+            // (prepare_bind solo prueba que el World seria enlazable, no que sea el enlazado).
+            self.pursuit.check_bound_identity(world)?;
+            self.pursuit.debug().prepare_bind(world)?;
+        }
+        Ok(())
+    }
+
+    /// Nuevo juego: no simula un cuadro ni conserva la historia de quietud de X.
+    pub(crate) fn restart_game(&mut self, world: &World) -> Result<(), String> {
+        self.reset(world)?;
+        self.previous = None;
+        self.status.frame = 0;
+        self.status.quiet_frames = 0;
+        self.status.matrices_stable = false;
+        Ok(())
     }
 
     /// X: reenlaza la persecucion con el World ACTUAL (controlador a reposo) y descarta episodio y
@@ -652,12 +699,18 @@ impl<'c, 'p> GraspPreview<'c, 'p> {
     }
 
     /// Politica de estudio ANTES de avanzar: matrices capturadas (bits) y O2 de persecucion.
-    fn check_fresh(&self, world: &World, current: (Mat4, Mat4)) -> Option<CancelReason> {
+    fn check_fresh(
+        &self,
+        world: &World,
+        current: (Mat4, Mat4),
+        defer_oxygen: bool,
+    ) -> Option<CancelReason> {
         let e = self.episode.as_ref()?;
         if !(same_bits(&e.ship, &current.0) && same_bits(&e.body, &current.1)) {
             return Some(CancelReason::ShipOrBodyMoved);
         }
-        (world.debug_oxygen01.is_nan() || world.debug_oxygen01 > PURSUIT_ENGAGE_OXYGEN)
+        (!defer_oxygen
+            && (world.debug_oxygen01.is_nan() || world.debug_oxygen01 > PURSUIT_ENGAGE_OXYGEN))
             .then_some(CancelReason::OxygenAboveEngage)
     }
 
@@ -690,8 +743,9 @@ impl<'c, 'p> GraspPreview<'c, 'p> {
         mut handoff: Box<GraspHandoff<'c>>,
         current: (Mat4, Mat4),
         events: &mut Vec<PreviewEvent>,
+        defer_oxygen: bool,
     ) {
-        if let Some(reason) = self.check_fresh(world, current) {
+        if let Some(reason) = self.check_fresh(world, current, defer_oxygen) {
             return self.stop(PreviewPhase::Handoff, Some(reason), None, events);
         }
         let (ship, body) = (current.0, current.1);
@@ -729,9 +783,10 @@ impl<'c, 'p> GraspPreview<'c, 'p> {
         mut closure: Box<GraspClosure<'c, 'p>>,
         current: (Mat4, Mat4),
         events: &mut Vec<PreviewEvent>,
+        defer_oxygen: bool,
     ) {
         let during = closure_phase(closure.status().phase);
-        if let Some(reason) = self.check_fresh(world, current) {
+        if let Some(reason) = self.check_fresh(world, current, defer_oxygen) {
             return self.stop(during, Some(reason), None, events);
         }
         let status = match closure.advance(&current.0, &current.1, dt) {
@@ -987,6 +1042,16 @@ impl<'c, 'p> GraspPreview<'c, 'p> {
         dt: f64,
         reset: bool,
     ) -> Result<PreviewStatus, String> {
+        self.frame_on_contact_owned(world, dt, reset, false)
+    }
+
+    pub(crate) fn frame_on_contact_owned(
+        &mut self,
+        world: &World,
+        dt: f64,
+        reset: bool,
+        defer_oxygen: bool,
+    ) -> Result<PreviewStatus, String> {
         if !(dt.is_finite() && (0.0..=MAX_PURSUIT_DT).contains(&dt)) {
             return Err(format!(
                 "dt invalido (finito en [0, {MAX_PURSUIT_DT}]): {dt}; nada cambia"
@@ -1031,8 +1096,12 @@ impl<'c, 'p> GraspPreview<'c, 'p> {
                 self.stage = Stage::Pursuit;
                 self.contact_pursuit_frame(world, dt, current, &mut events);
             }
-            Stage::Handoff(handoff) => self.handoff_frame(world, dt, handoff, current, &mut events),
-            Stage::Closure(closure) => self.closure_frame(world, dt, closure, current, &mut events),
+            Stage::Handoff(handoff) => {
+                self.handoff_frame(world, dt, handoff, current, &mut events, defer_oxygen)
+            }
+            Stage::Closure(closure) => {
+                self.closure_frame(world, dt, closure, current, &mut events, defer_oxygen)
+            }
             Stage::Stopped => {}
         }
         self.previous = Some(current);
@@ -1042,6 +1111,23 @@ impl<'c, 'p> GraspPreview<'c, 'p> {
         self.status.quiet_frames = quiet;
         self.status.frame += 1;
         Ok(self.status.clone())
+    }
+
+    /// Reaccion final sin paso, reloj, integracion ni nueva publicacion de malla.
+    pub(crate) fn react_to_oxygen(&mut self, world: &World) {
+        if matches!(self.stage, Stage::Handoff(_) | Stage::Closure(_))
+            && (world.debug_oxygen01.is_nan() || world.debug_oxygen01 > PURSUIT_ENGAGE_OXYGEN)
+        {
+            let mut events = Vec::new();
+            self.stop(
+                self.phase(),
+                Some(CancelReason::OxygenAboveEngage),
+                None,
+                &mut events,
+            );
+            self.status.events.extend(events);
+            self.status.phase = self.phase();
+        }
     }
 
     /// Persecucion de la politica automatica: paso con el World ya movido y, si es contacto real, la MISMA

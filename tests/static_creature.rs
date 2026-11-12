@@ -413,7 +413,8 @@ fn the_game_command_line_wires_the_creature_and_rejects_bad_combinations() {
             stdout.contains("Criatura: 8 vertices, 12 triangulos, textura 2x2"),
             "{stdout}"
         );
-        assert!(stdout.contains("objetos 6 (descartados"), "{stdout}");
+        // CORRECTION03: +6 balizas integradas en el cuadro del CLI.
+        assert!(stdout.contains("objetos 12 (descartados"), "{stdout}");
         assert!(output.exists());
     });
     std::fs::remove_dir_all(&dir).unwrap();
@@ -465,7 +466,7 @@ fn no_ship() -> Model {
 
 #[test]
 fn without_a_creature_the_world_renders_exactly_as_before() {
-    let mut world = new_world();
+    let mut world = without_catalogs(new_world());
     assert!(world.creature().is_none());
     let (pixels, stats) = render(&world);
     assert_eq!(stats.objects_submitted, 5, "Sol, 3 planetas y nave");
@@ -720,4 +721,26 @@ fn near_creature_spawn_faces_its_front_and_can_be_repeated_exactly() {
         .map(|b| (b.body_radius, b.orbit.radius, b.position(0.0)))
         .collect();
     assert_eq!(bodies_after, bodies_before);
+}
+
+/// CORRECTION03: componente visual puro con los catalogos de gameplay EXPLICITAMENTE vacios (sin las seis
+/// balizas integradas en `World::new`); la escena integrada con balizas se prueba aparte.
+fn without_catalogs(mut world: World) -> World {
+    world.gameplay.resources.clear();
+    world.gameplay.logs.clear();
+    world
+}
+
+#[test]
+fn correction03_the_integrated_world_adds_exactly_its_six_beacons() {
+    let world = new_world();
+    let beacons = world.gameplay.resources.len() + world.gameplay.logs.len();
+    assert_eq!(beacons, 6);
+    let (_, plain) = render(&without_catalogs(new_world()));
+    let (_, integrated) = render(&world);
+    assert_eq!(plain.objects_submitted, 5, "Sol, 3 planetas y nave");
+    assert_eq!(
+        integrated.objects_submitted,
+        plain.objects_submitted + beacons
+    );
 }

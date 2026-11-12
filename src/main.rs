@@ -57,6 +57,7 @@ fn run() -> Result<(), String> {
     let mut output = PathBuf::from("renders/nave.png");
     let (mut legacy, mut time, mut near, mut culling) = (false, 0.0, None, true);
     let (mut lod, mut overlay) = (true, false);
+    let mut gameplay_feedback = false;
     let (mut creature_model, mut creature_texture, mut near_creature) = (None, None, false);
     let (mut creature_reveal, mut debug_oxygen) = (false, None);
     let (mut creature_reveal_stages, mut creature_eye_follow) = (false, false);
@@ -82,6 +83,7 @@ fn run() -> Result<(), String> {
             "--no-culling" => culling = false,
             "--no-lod" => lod = false,
             "--overlay" => overlay = true,
+            "--gameplay-feedback" => gameplay_feedback = true,
             "--time" => {
                 time = args
                     .next()
@@ -333,6 +335,15 @@ CAPTURA AUTOMATICA por contacto (GT3, opt-in): --tentacle-auto-capture (requiere
             creature_reveal_stages,
             creature_eye_follow,
             debug_oxygen: debug_oxygen.unwrap_or(1.0),
+        };
+        let options = umbral::app::ConfiguredGameOptions {
+            options,
+            gameplay_feedback,
+            oxygen_source: if debug_oxygen.is_some() {
+                umbral::app::OxygenSource::Debug
+            } else {
+                umbral::app::OxygenSource::Real
+            },
         };
         let route = PerceptionRoute {
             lucid: lucid_surface,

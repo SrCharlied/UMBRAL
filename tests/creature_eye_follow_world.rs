@@ -967,12 +967,13 @@ fn the_game_command_line_wires_the_eye_follow_and_validates_before_any_io() {
             !g.is_neutral() && stdout.contains(&line),
             "{line}\n{stdout}"
         );
-        assert!(stdout.contains("objetos 6 (descartados"), "{stdout}");
+        // CORRECTION03: +6 balizas integradas en el cuadro del CLI.
+        assert!(stdout.contains("objetos 12 (descartados"), "{stdout}");
         let (stages5, _) = capture("stages5.png", &[&near[..], &o5].concat());
         assert_ne!(eye5, stages5, "el ojo se movio");
         // 100 % (por defecto): oculta; identica a las etapas sin mirada y con 5 objetos.
         let (eye100, stdout) = capture("eye100.png", &with_eye);
-        assert!(stdout.contains("objetos 5 (descartados"), "{stdout}");
+        assert!(stdout.contains("objetos 11 (descartados"), "{stdout}");
         let (stages100, _) = capture("stages100.png", &near);
         assert_eq!(eye100, stages100);
     });

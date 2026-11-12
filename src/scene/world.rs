@@ -79,6 +79,12 @@ impl Default for DebugToggles {
 }
 
 pub struct World {
+    pub gameplay: crate::gameplay::GameplayState,
+    pub orbit_assist: bool,
+    pub forced_oxygen: Option<f64>,
+    mirrored_oxygen: f64,
+    visual_transition_owned: bool,
+    pub(crate) restart_generation: u64,
     pub system: SolarSystem,
     pub ship: Ship,
     pub camera: Camera,
@@ -146,6 +152,7 @@ struct StagedMode {
 struct EyeMode {
     follow: EyeFollow,
     target: EyeTarget,
+    initial_target: EyeTarget,
     rig: Option<EyeRig>,
     /// Giro global lejano (candidata, opt-in); solo existe con la mirada.
     turn: Option<DistantTurn>,
@@ -191,6 +198,12 @@ impl World {
         let ship = Self::start_ship();
         let body_lod = vec![Cell::new(0); SolarSystem::demo().bodies.len()];
         let mut world = Self {
+            gameplay: crate::gameplay::GameplayState::default(),
+            orbit_assist: false,
+            forced_oxygen: None,
+            mirrored_oxygen: 1.0,
+            visual_transition_owned: false,
+            restart_generation: 0,
             system: SolarSystem::demo(),
             ship,
             camera: Camera::new(BASE_FOV, aspect, 0.3, 6000.0)?,
@@ -242,9 +255,81 @@ impl World {
     /// Restablece la nave; conserva el oxigeno y lleva la revelacion y la mirada a su objetivo.
     pub fn reset_ship(&mut self) {
         self.ship = Self::start_ship();
+        self.gameplay.navigation.gravity_velocity = Vec3::ZERO;
+        self.gameplay.navigation.assisted_planet = None;
         self.snap_camera();
         self.snap_creature_reveal();
         self.snap_creature_eye_follow();
+    }
+
+    /// Explicit new game, not visual relocation. Preserve configurable gameplay settings.
+    pub fn restart_game(&mut self) {
+        self.restart_generation = self.restart_generation.wrapping_add(1);
+        let settings = self.gameplay.settings;
+        self.gameplay = crate::gameplay::GameplayState::default();
+        self.gameplay.settings = settings;
+        self.time = 0.0;
+        self.orbit_assist = false;
+        self.forced_oxygen = None;
+        self.debug_oxygen01 = 1.0;
+        self.mirrored_oxygen = 1.0;
+        self.visual_transition_owned = false;
+        if let Some(eye) = self.staged_reveal.as_mut().and_then(|m| m.eye.as_mut()) {
+            eye.target = eye.initial_target;
+            if eye.turn.is_some() {
+                eye.turn = Some(DistantTurn::new());
+            }
+            if eye.horizontal.is_some() {
+                eye.horizontal = Some(HorizontalFollow::new());
+            }
+        }
+        self.ship = Self::start_ship();
+        self.snap_camera();
+        self.snap_creature_reveal();
+        self.snap_creature_eye_follow();
+    }
+
+    /// Oxigeno visual: override explicito, control legado, o valor real.
+    pub fn oxygen01(&self) -> f64 {
+        if self.visual_transition_owned {
+            return self.debug_oxygen01;
+        }
+        let value = self.forced_oxygen.unwrap_or({
+            if self.debug_oxygen01 != self.mirrored_oxygen {
+                self.debug_oxygen01
+            } else {
+                self.gameplay.oxygen01
+            }
+        });
+        if value.is_finite() {
+            value.clamp(0.0, 1.0)
+        } else {
+            self.gameplay.oxygen01
+        }
+    }
+
+    pub fn set_debug_oxygen(&mut self, value: f64) {
+        if value.is_finite() {
+            self.visual_transition_owned = false;
+            self.forced_oxygen = Some(value.clamp(0.0, 1.0));
+            self.debug_oxygen01 = value.clamp(0.0, 1.0);
+            self.mirrored_oxygen = self.debug_oxygen01;
+        }
+    }
+
+    pub fn clear_debug_oxygen(&mut self) {
+        self.forced_oxygen = None;
+        if !self.visual_transition_owned {
+            self.debug_oxygen01 = self.gameplay.oxygen01;
+            self.mirrored_oxygen = self.debug_oxygen01;
+        }
+    }
+
+    /// Internal publication is not a debug command and never changes the real reserve.
+    pub(crate) fn publish_visual_oxygen(&mut self, shown: f64) {
+        self.debug_oxygen01 = shown;
+        self.mirrored_oxygen = shown;
+        self.visual_transition_owned = true;
     }
 
     /// Coloca la nave a `surface_gap` unidades de la superficie del cuerpo `index`,
@@ -274,6 +359,22 @@ impl World {
     /// orientada con `camera_basis`, que sigue a la nave con suavizado. Asi la distancia
     /// camara-nave es constante a cualquier velocidad y solo la orientacion "se arrastra".
     fn desired_camera(&self) -> (Vec3, Vec3) {
+        if self.orbit_assist
+            && let Some(body) = self
+                .gameplay
+                .navigation
+                .assisted_planet
+                .and_then(|index| self.system.bodies.get(index))
+        {
+            let center = body.position(self.time);
+            let radial = (self.ship.position - center).normalized();
+            // Navigation conserva este eje perpendicular al plano orbital, incluso en polos.
+            let up = self.ship.up();
+            return (
+                self.ship.position + radial * self.chase_distance + up * self.chase_height,
+                center,
+            );
+        }
         let basis = &self.camera_basis;
         let back = basis.transform_dir(Vec3::Z);
         let up = basis.transform_dir(Vec3::Y);
@@ -281,22 +382,84 @@ impl World {
         (position, self.ship.position - back * 30.0)
     }
 
+    fn desired_camera_up(&self) -> Vec3 {
+        if self.orbit_assist && self.gameplay.navigation.assisted_planet.is_some() {
+            self.ship.up()
+        } else {
+            self.camera_basis.transform_dir(Vec3::Y)
+        }
+    }
+
     fn snap_camera(&mut self) {
         self.camera_basis = self.ship.orientation;
         let (position, target) = self.desired_camera();
         self.camera.position = position;
         self.camera.target = target;
-        self.camera.up = self.camera_basis.transform_dir(Vec3::Y);
+        self.camera.up = self.desired_camera_up();
     }
 
     pub fn update(&mut self, input: &ShipInput, dt: f64) {
+        self.update_with_pose_owner(input, dt, false);
+    }
+
+    pub(crate) fn update_with_pose_owner(&mut self, input: &ShipInput, dt: f64, captured: bool) {
         if !(dt.is_finite() && dt > 0.0) {
             return;
         }
+        if self.gameplay.game_over || self.gameplay.objective_complete {
+            return;
+        }
+        if self.debug_oxygen01 != self.mirrored_oxygen && self.debug_oxygen01.is_finite() {
+            self.forced_oxygen = Some(self.debug_oxygen01.clamp(0.0, 1.0));
+        }
+        self.gameplay.tick(dt);
+        self.debug_oxygen01 = self.oxygen01();
+        self.mirrored_oxygen = self.debug_oxygen01;
+        if self.gameplay.game_over {
+            return;
+        }
+        let old_time = self.time;
         if !self.toggles.freeze_orbits {
             self.time += dt;
         }
+        if captured {
+            // Capture publishes the only pose; never visit provisional physics or pickups.
+            self.gameplay.navigation.gravity_velocity = Vec3::ZERO;
+            self.gameplay.navigation.assisted_planet = None;
+            return;
+        }
+        let previous = self.ship.position;
         self.ship.update(input, dt);
+        self.gameplay
+            .navigation
+            .apply_gravity(&mut self.ship, &self.system, self.time, dt);
+        self.gameplay.navigation.assist(
+            &mut self.ship,
+            input,
+            &self.system,
+            old_time,
+            self.time,
+            dt,
+            self.orbit_assist,
+        );
+        self.gameplay.navigation.resolve_collisions(
+            &mut self.ship,
+            previous,
+            &self.system,
+            old_time,
+            self.time,
+        );
+        self.gameplay.collect_along(
+            previous,
+            self.ship.position,
+            &self.system,
+            old_time,
+            self.time,
+        );
+        if !self.visual_transition_owned {
+            self.debug_oxygen01 = self.forced_oxygen.unwrap_or(self.gameplay.oxygen01);
+            self.mirrored_oxygen = self.debug_oxygen01;
+        }
         // La base de la camara persigue la orientacion de la nave con suavizado
         // independiente de los FPS; mezclar y reortonormalizar es estable para pasos chicos.
         let k = smoothing(CAMERA_TURN_RESPONSE, dt);
@@ -310,7 +473,7 @@ impl World {
         let (position, target) = self.desired_camera();
         self.camera.position = position;
         self.camera.target = target;
-        self.camera.up = self.camera_basis.transform_dir(Vec3::Y);
+        self.camera.up = self.desired_camera_up();
         // Apertura mayor con la velocidad para dar sensacion de impulso.
         let fraction = (self.ship.speed
             / (self.ship.settings.max_speed * self.ship.settings.boost_multiplier))
@@ -469,6 +632,7 @@ impl World {
         mode.eye = Some(EyeMode {
             follow: EyeFollow::new(settings),
             target,
+            initial_target: target,
             rig,
             turn: None,
             horizontal: None,
@@ -1022,6 +1186,7 @@ impl World {
                 &self.camera,
             )
         };
+        self.draw_collectibles(fb, &context, &mut stats);
         // Criatura: la pose y el descarte de siempre (el ojo posado se posa solo si cambian
         // los angulos), con el mismo transform para ojo y cuerpo.
         let parts = mode
@@ -1288,14 +1453,88 @@ impl World {
     fn context(&self) -> ShaderContext {
         ShaderContext {
             elapsed_time: self.time,
-            oxygen01: self.debug_oxygen01.clamp(0.0, 1.0),
+            oxygen01: self.oxygen01(),
             camera_position: self.camera.position,
             ship_position: self.ship.position,
             light_position: self.system.light_position(),
         }
     }
 
-    /// Dibuja el cuadro completo: fondo, estrellas, cuerpos, criatura (si la hay) y nave.
+    /// Descarte conservador sobre el centro real del modelo, antes de transformar vertices.
+    fn draw_instance(
+        &self,
+        fb: &mut Framebuffer,
+        model: &Model,
+        transform: &Transform,
+        material: &Material,
+        shader: ShaderKind,
+        context: &ShaderContext,
+    ) -> RenderStats {
+        let center = transform
+            .matrix()
+            .transform_point(Vec3::from_array(model.bounds_center));
+        let radius = model.bounds_radius
+            * transform
+                .scale
+                .x
+                .abs()
+                .max(transform.scale.y.abs())
+                .max(transform.scale.z.abs());
+        if self.toggles.frustum_culling && !self.camera.frustum().sphere_visible(center, radius) {
+            return RenderStats {
+                objects_submitted: 1,
+                objects_culled: 1,
+                triangles_submitted: model.faces.len(),
+                triangles_culled: model.faces.len(),
+                ..RenderStats::default()
+            };
+        }
+        draw_model(
+            fb,
+            model,
+            transform,
+            material,
+            shader,
+            context,
+            &self.camera,
+        )
+    }
+
+    fn draw_collectibles(
+        &self,
+        fb: &mut Framebuffer,
+        context: &ShaderContext,
+        stats: &mut RenderStats,
+    ) {
+        let model = &self.sphere_lods[2];
+        for (anchor, is_log) in self
+            .gameplay
+            .resources
+            .iter()
+            .map(|r| (r, false))
+            .chain(self.gameplay.logs.iter().map(|log| (&log.anchor, true)))
+        {
+            if anchor.collected {
+                continue;
+            }
+            if let Some(position) = anchor.position(&self.system, self.time) {
+                let transform = Transform {
+                    position,
+                    rotation: Vec3::new(0.0, self.time * 1.5, 0.0),
+                    scale: Vec3::splat(if is_log { 1.8 } else { 2.4 }),
+                };
+                let material = if is_log {
+                    Material::solid(0.95, 0.55, 0.12)
+                } else {
+                    Material::solid(0.12, 0.9, 0.75)
+                };
+                *stats +=
+                    self.draw_instance(fb, model, &transform, &material, ShaderKind::Flat, context);
+            }
+        }
+    }
+
+    /// Dibuja el cuadro completo: fondo, estrellas, cuerpos, balizas y nave.
     pub fn render(&self, fb: &mut Framebuffer) -> RenderStats {
         fb.clear();
         let mut stats = RenderStats::default();
@@ -1379,6 +1618,7 @@ impl World {
                 Err(error) => debug_assert!(false, "criatura sin dibujar: {error}"),
             }
         }
+        self.draw_collectibles(fb, &context, &mut stats);
         let ship_transform = self.ship.transform(SHIP_MODEL_YAW);
         stats.objects_submitted += 1;
         stats += RenderStats {
@@ -1747,6 +1987,8 @@ impl World {
         }
         self.ship = ship;
         self.camera = camera;
+        self.gameplay.navigation.gravity_velocity = Vec3::ZERO;
+        self.gameplay.navigation.assisted_planet = None;
         Ok(())
     }
 }

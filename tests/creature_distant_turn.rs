@@ -1495,7 +1495,7 @@ fn a_flown_far_to_near_and_back_replay_never_jumps_and_the_eye_always_compensate
 
 #[test]
 fn switching_presets_back_and_forth_resets_the_turn_and_never_produces_bad_numbers() {
-    let mut world = turn_world();
+    let mut world = without_catalogs(turn_world());
     world.debug_oxygen01 = 0.05;
     for (i, preset) in [
         CreaturePreset::Far,
@@ -1610,4 +1610,228 @@ fn the_real_asset_turns_rigidly_far_away_and_keeps_its_arrays() {
                 && a.normal_indices == b.normal_indices)
     );
     assert_eq!(model.bounds_center, fresh.bounds_center);
+}
+
+// --- CORRECTION03: reinicio completo (Shift+R) y estado terminal en el despacho REAL del bucle ---
+
+mod correction03_dispatch {
+    use super::*;
+    use umbral::{
+        app::{DispatchRoute, FrameKeys, dispatch_frame_keys},
+        scene::ship::ShipInput,
+        visual::perception_game::OxygenKeys,
+    };
+
+    fn advance(world: &mut World, frames: usize) {
+        for _ in 0..frames {
+            world.update(&ShipInput::default(), 1.0 / 60.0);
+            world.update_creature_eye_follow(1.0 / 60.0);
+        }
+    }
+    fn route() -> DispatchRoute {
+        DispatchRoute {
+            distant_turn: true,
+            ..DispatchRoute::default()
+        }
+    }
+    fn every_key_but_restart() -> FrameKeys {
+        FrameKeys {
+            full_restart: false,
+            reset: true,
+            frontal: true,
+            oblique: true,
+            follow: true,
+            target: true,
+            orbit_assist: true,
+            real_oxygen: true,
+            oxygen: OxygenKeys {
+                preset: Some(1.0),
+                increase: true,
+                decrease: false,
+            },
+            capture_toggle: true,
+            emergency: true,
+        }
+    }
+    fn observable(world: &World) -> String {
+        format!(
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+            world.ship,
+            world.camera,
+            world.creature_distant_turn(),
+            world.creature_eye_follow().map(|f| f.current()),
+            world.creature_eye_target(),
+            (
+                world.debug_oxygen01,
+                world.forced_oxygen,
+                world.orbit_assist
+            ),
+            world.time
+        )
+    }
+    /// Mundo de la ruta del giro ya jugado: preset CERCA por 7, giro avanzado y H apagado.
+    fn played() -> (World, CreaturePreset) {
+        let mut world = turn_world();
+        world.debug_oxygen01 = 0.05;
+        let mut last = CreaturePreset::Far;
+        world.place_creature_preset(CreaturePreset::Far).unwrap();
+        advance(&mut world, 90);
+        dispatch_frame_keys(
+            &mut world,
+            None,
+            None,
+            route(),
+            &mut last,
+            FrameKeys {
+                follow: true,
+                ..FrameKeys::default()
+            },
+        )
+        .unwrap();
+        advance(&mut world, 30);
+        (world, last)
+    }
+
+    /// Cubre el `turn` de `World::restart_game` que ninguna prueba afirmaba (mutante m5b de correction02).
+    #[test]
+    fn correction03_full_restart_restores_the_turn_and_clock_with_preconditions() {
+        let (mut world, _) = played();
+        let turn = world.creature_distant_turn().unwrap();
+        assert!(
+            !turn.is_active() && turn.current() != TurnAngles::NEUTRAL,
+            "precondicion: giro avanzado y H apagado {turn:?}"
+        );
+        assert_ne!(turn, DistantTurn::new(), "precondicion");
+        assert!(world.time > 0.0, "precondicion: reloj avanzado");
+        world.restart_game();
+        assert_eq!(world.creature_distant_turn(), Some(DistantTurn::new()));
+        assert_eq!(world.time, 0.0);
+    }
+
+    #[test]
+    fn correction03_terminal_ignores_every_relocation_and_effect_key_but_shift_r() {
+        for objective in [false, true] {
+            let (mut world, mut last) = played();
+            dispatch_frame_keys(
+                &mut world,
+                None,
+                None,
+                route(),
+                &mut last,
+                FrameKeys {
+                    frontal: true,
+                    ..FrameKeys::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                last,
+                CreaturePreset::Near,
+                "precondicion: 7 aplica en juego activo"
+            );
+            advance(&mut world, 20);
+            if objective {
+                world.gameplay.objective_complete = true;
+            } else {
+                world.gameplay.game_over = true;
+            }
+            let before = observable(&world);
+            dispatch_frame_keys(
+                &mut world,
+                None,
+                None,
+                route(),
+                &mut last,
+                every_key_but_restart(),
+            )
+            .unwrap();
+            assert_eq!(
+                observable(&world),
+                before,
+                "terminal aplico R/7/8/H/G/O/0/O2 (objective={objective})"
+            );
+            assert_eq!(last, CreaturePreset::Near, "terminal cambio el preset");
+            dispatch_frame_keys(
+                &mut world,
+                None,
+                None,
+                route(),
+                &mut last,
+                FrameKeys {
+                    full_restart: true,
+                    ..FrameKeys::default()
+                },
+            )
+            .unwrap();
+            assert!(
+                !world.gameplay.game_over && !world.gameplay.objective_complete,
+                "Shift+R no reinicio desde terminal"
+            );
+        }
+    }
+
+    #[test]
+    fn correction03_full_restart_restores_the_route_start_preset_and_turn() {
+        let (mut world, mut last) = played();
+        dispatch_frame_keys(
+            &mut world,
+            None,
+            None,
+            route(),
+            &mut last,
+            FrameKeys {
+                frontal: true,
+                ..FrameKeys::default()
+            },
+        )
+        .unwrap();
+        advance(&mut world, 30);
+        assert_eq!(last, CreaturePreset::Near, "precondicion");
+        dispatch_frame_keys(
+            &mut world,
+            None,
+            None,
+            route(),
+            &mut last,
+            FrameKeys {
+                full_restart: true,
+                ..FrameKeys::default()
+            },
+        )
+        .unwrap();
+        // Arranque de la ruta: el preset LEJOS (como `run`), el giro en reposo y el reloj en 0.
+        let mut start = turn_world();
+        start.place_creature_preset(CreaturePreset::Far).unwrap();
+        assert_eq!(
+            last,
+            CreaturePreset::Far,
+            "Shift+R conservo el preset jugado"
+        );
+        assert_eq!(format!("{:?}", world.ship), format!("{:?}", start.ship));
+        assert_eq!(format!("{:?}", world.camera), format!("{:?}", start.camera));
+        assert_eq!(world.creature_distant_turn(), Some(DistantTurn::new()));
+        assert_eq!(world.time, 0.0);
+    }
+}
+
+/// CORRECTION03: componente visual puro con los catalogos de gameplay EXPLICITAMENTE vacios (sin las seis
+/// balizas integradas en `World::new`); la escena integrada con balizas se prueba aparte.
+fn without_catalogs(mut world: World) -> World {
+    world.gameplay.resources.clear();
+    world.gameplay.logs.clear();
+    world
+}
+
+#[test]
+fn correction03_the_integrated_turn_world_draws_its_six_beacons_too() {
+    let mut world = turn_world();
+    world.debug_oxygen01 = 0.05;
+    world.place_creature_preset(CreaturePreset::Far).unwrap();
+    let beacons = world.gameplay.resources.len() + world.gameplay.logs.len();
+    assert_eq!(beacons, 6);
+    let (_, stats) = render(&world);
+    assert_eq!(
+        stats.objects_submitted,
+        world.system.bodies.len() + 2 + beacons
+    );
 }

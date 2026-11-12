@@ -382,11 +382,13 @@ fn eye_mask_and_colors(light: SolarRevealLight) -> (Vec<bool>, Vec<u32>) {
 #[test]
 fn at_and_below_the_hint_the_sun_leaves_no_rgb_or_depth_and_the_pair_is_the_approved_path() {
     for oxygen in [0.25, 0.15, 0.05, 0.0] {
-        let world = solar_world(SolarRevealLight::World, oxygen);
+        let world = cleared_solar_world(SolarRevealLight::World, oxygen);
         assert_eq!(world.solar_reveal_alphas().unwrap().sun, 0.0);
         let (fb, stats) = preview(&world);
-        let (reference, reference_stats) =
-            base(&without_sun(solar_world(SolarRevealLight::World, oxygen)));
+        let (reference, reference_stats) = base(&without_sun(cleared_solar_world(
+            SolarRevealLight::World,
+            oxygen,
+        )));
         assert!(fb.pixels == reference.pixels, "RGB {oxygen}");
         assert_eq!(
             (stats.objects_submitted, stats.objects_culled),
@@ -523,19 +525,25 @@ fn ship_like_quads_and_a_real_planet_in_front_hide_the_pair_with_the_world_depth
 #[test]
 fn the_partial_sun_blends_over_the_real_background_not_toward_black() {
     let light = SolarRevealLight::World;
-    let world = solar_world(light, 0.28);
+    let world = cleared_solar_world(light, 0.28);
     let a = world.solar_reveal_alphas().unwrap();
     assert!(a.sun > 0.0 && a.sun < 1.0 && a.eye == 1.0, "{a:?}");
     let shown = preview(&world).0.pixels;
-    let plain_sun = base(&without_creature(solar_world(light, 0.28))).0.pixels;
-    let bg = base(&without_sun(without_creature(solar_world(light, 0.28))))
+    let plain_sun = base(&without_creature(cleared_solar_world(light, 0.28)))
         .0
         .pixels;
+    let bg = base(&without_sun(without_creature(cleared_solar_world(
+        light, 0.28,
+    ))))
+    .0
+    .pixels;
     let creature = differs(
-        &base(&without_sun(solar_world(light, 0.0))).0.pixels,
-        &base(&without_sun(without_creature(solar_world(light, 0.0))))
-            .0
-            .pixels,
+        &base(&without_sun(cleared_solar_world(light, 0.0))).0.pixels,
+        &base(&without_sun(without_creature(cleared_solar_world(
+            light, 0.0,
+        ))))
+        .0
+        .pixels,
     );
     let sun = differs(&plain_sun, &bg);
     let mut ring = 0;
@@ -560,10 +568,10 @@ fn the_partial_sun_blends_over_the_real_background_not_toward_black() {
 #[test]
 fn the_local_light_only_changes_the_creature_and_buffers_are_reused() {
     let (mask, _) = eye_mask_and_colors(SolarRevealLight::World);
-    let world_light = preview(&solar_world(SolarRevealLight::World, 0.30))
+    let world_light = preview(&cleared_solar_world(SolarRevealLight::World, 0.30))
         .0
         .pixels;
-    let camera = solar_world(SolarRevealLight::Camera, 0.30);
+    let camera = cleared_solar_world(SolarRevealLight::Camera, 0.30);
     let (fb, stats) = preview(&camera);
     let mut changed = 0;
     for i in 0..W * H {
@@ -850,4 +858,34 @@ fn reused_buffers_give_the_same_frame_as_fresh_ones_across_sizes_and_layers() {
         .unwrap();
     assert!(fb.pixels.iter().all(|&p| p == 7));
     assert_eq!(stats, RenderStats::default());
+}
+
+/// CORRECTION03: componente visual puro con los catalogos de gameplay EXPLICITAMENTE vacios (sin las seis
+/// balizas integradas en `World::new`); la escena integrada con balizas se prueba aparte.
+fn without_catalogs(mut world: World) -> World {
+    world.gameplay.resources.clear();
+    world.gameplay.logs.clear();
+    world
+}
+
+/// CORRECTION03: el preview solar del componente con catalogos vacios (referencia Y candidato).
+fn cleared_solar_world(light: SolarRevealLight, oxygen: f64) -> World {
+    without_catalogs(solar_world(light, oxygen))
+}
+
+#[test]
+fn correction03_the_integrated_solar_preview_adds_exactly_its_six_beacons() {
+    let world = solar_world(SolarRevealLight::World, 0.30);
+    let beacons = world.gameplay.resources.len() + world.gameplay.logs.len();
+    assert_eq!(beacons, 6);
+    let (_, plain) = preview(&cleared_solar_world(SolarRevealLight::World, 0.30));
+    let (_, integrated) = preview(&world);
+    assert_eq!(
+        plain.objects_submitted, 6,
+        "cuatro cuerpos, la criatura y la nave"
+    );
+    assert_eq!(
+        integrated.objects_submitted,
+        plain.objects_submitted + beacons
+    );
 }

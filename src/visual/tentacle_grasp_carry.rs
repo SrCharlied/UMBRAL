@@ -437,7 +437,7 @@ impl<'c, 'p> CaptureCarry<'c, 'p> {
         let mut events = Vec::new();
         match &self.mode {
             Mode::Free => self.free_frame(world, dt, keys, &mut events)?,
-            Mode::Locked(_) => self.locked_frame(world, dt, keys, &mut events)?,
+            Mode::Locked(_) => self.locked_frame(world, dt, keys, &mut events, false)?,
             Mode::Released(_) | Mode::Aborted => {
                 if let Mode::Released(layer) = &self.mode {
                     // La observacion se dibuja: revalidarla contra el World vigente (sin render viejo).
@@ -454,6 +454,64 @@ impl<'c, 'p> CaptureCarry<'c, 'p> {
         self.status.phase = self.phase();
         self.status.frame += 1;
         Ok(self.status.clone())
+    }
+
+    pub(crate) fn validate_frozen(&self, world: &World, dt: f64) -> Result<(), String> {
+        self.preview.validate_frozen(world, dt)?;
+        if let Some(layer) = self.own_layer() {
+            if !world
+                .creature()
+                .is_some_and(|c| same_model(&layer.source_model, c.model()))
+                || !world
+                    .staged_creature_parts()
+                    .is_some_and(|p| same_model(&layer.source_body, p.body()))
+            {
+                return Err("criatura o particion distintas del bloqueo; nada cambia".into());
+            }
+            world.validate_solar_body_override(&layer.view())?;
+        }
+        Ok(())
+    }
+
+    /// Reaccion al O2 FINAL: sin integrar pose ni reloj de nuevo.
+    pub(crate) fn react_to_oxygen(&mut self, world: &mut World) -> Result<(), String> {
+        if world.debug_oxygen01 <= PURSUIT_ENGAGE_OXYGEN {
+            return Ok(());
+        }
+        if let Mode::Locked(lock) = &self.mode {
+            world.validate_solar_body_override(&lock.layer.view())?;
+            free_ship(world);
+            let Mode::Locked(lock) = std::mem::replace(&mut self.mode, Mode::Free) else {
+                unreachable!()
+            };
+            self.mode = Mode::Released(Box::new(lock.layer));
+            self.status.release = Some(ReleaseReason::OxygenAboveEngage);
+            self.status
+                .events
+                .push(CarryEvent::Released(ReleaseReason::OxygenAboveEngage));
+        } else if matches!(self.mode, Mode::Free) {
+            let old = self.preview.status().events.len();
+            self.preview.react_to_oxygen(world);
+            let st = self.preview.status();
+            self.status
+                .events
+                .extend(st.events[old..].iter().cloned().map(CarryEvent::Preview));
+            self.status.preview = st;
+        }
+        self.status.phase = self.phase();
+        Ok(())
+    }
+
+    /// Nuevo juego: conserva clip, plan y configuracion; descarta el episodio sin avance.
+    pub(crate) fn restart_game(&mut self, world: &World) -> Result<(), String> {
+        self.preview.restart_game(world)?;
+        self.mode = Mode::Free;
+        self.clear_lock_status();
+        self.status.phase = CarryPhase::Free(self.preview.status().phase);
+        self.status.preview = self.preview.status();
+        self.status.events.clear();
+        self.status.frame = 0;
+        Ok(())
     }
 
     /// X fuera del bloqueo (observacion o abortada): reinicio de C desde el World actual.
@@ -596,6 +654,7 @@ impl<'c, 'p> CaptureCarry<'c, 'p> {
         dt: f64,
         keys: PreviewKeys,
         events: &mut Vec<CarryEvent>,
+        defer_oxygen: bool,
     ) -> Result<(), String> {
         let Mode::Locked(lock) = &self.mode else {
             return Err("sin bloqueo".into());
@@ -650,7 +709,7 @@ impl<'c, 'p> CaptureCarry<'c, 'p> {
             events.push(CarryEvent::RequestIgnored);
         }
         let o2 = world.debug_oxygen01;
-        if o2.is_nan() || o2 > PURSUIT_ENGAGE_OXYGEN {
+        if !defer_oxygen && (o2.is_nan() || o2 > PURSUIT_ENGAGE_OXYGEN) {
             world.validate_solar_body_override(&lock.layer.view())?;
             free_ship(world);
             let layer = match std::mem::replace(&mut self.mode, Mode::Free) {
@@ -941,6 +1000,24 @@ pub fn advance_capture_frame(
     {
         return Err("composicion numerica del vuelo no finita o degenerada; nada cambia".into());
     }
+    // CORRECTION05: identidad EXACTA (inmutable) ANTES de teclas solares, tick, O2 o captura: el tick de este
+    // cuadro puede alcanzar el terminal y su retorno congelado no debe aceptar una criatura PRESENTE ajena.
+    // Sin criatura (escena perdida) se conserva el escape aprobado: tick y `abort` explicito mas abajo.
+    if world.creature().is_some() {
+        carry.validate_frozen(world, elapsed.min(MAX_PHYSICS_DT))?;
+    }
+    if world.gameplay.game_over || world.gameplay.objective_complete {
+        // CORRECTION03 (USER_DECISIONS): sin O2 real o con victoria, nave y captura quedan congeladas
+        // hasta el reinicio completo; solo un World ENLAZADO (identidad exacta) se congela, sin mutar nada.
+        carry.validate_frozen(world, elapsed.min(MAX_PHYSICS_DT))?;
+        return Ok(FrameOutcome {
+            effective_ship: ShipInput::default(),
+            solar_applied: SolarKeys::default(),
+            solar_blocked: controls.solar.reset || controls.solar.frontal || controls.solar.oblique,
+            status: Ok(carry.status()),
+            aborted: false,
+        });
+    }
     let locked = carry.locks_flight();
     let mut solar = controls.solar;
     let solar_blocked = locked && (solar.reset || solar.frontal || solar.oblique);
@@ -954,6 +1031,17 @@ pub fn advance_capture_frame(
     };
     game.apply(world, solar)?;
     advance_perception_frame(world, oxygen, controls.oxygen, &effective_ship, elapsed)?;
+    if world.gameplay.game_over || world.gameplay.objective_complete {
+        // CORRECTION04: el tick REAL de este cuadro alcanzo el terminal (O2 agotado o victoria). Como en la ruta
+        // automatica, el arrastre ya no avanza reloj/pose/malla ni acepta X/T hasta el reinicio completo.
+        return Ok(FrameOutcome {
+            effective_ship,
+            solar_applied: solar,
+            solar_blocked,
+            status: Ok(carry.status()),
+            aborted: false,
+        });
+    }
     let status = carry.frame(world, elapsed.min(MAX_PHYSICS_DT), controls.preview);
     let aborted = status.is_err() && carry.has_own_layer();
     if let (true, Err(e)) = (aborted, &status) {
@@ -993,6 +1081,16 @@ impl CaptureCarry<'_, '_> {
         dt: f64,
         reset: bool,
     ) -> Result<CarryStatus, String> {
+        self.frame_on_contact_owned(world, dt, reset, false)
+    }
+
+    pub(crate) fn frame_on_contact_owned(
+        &mut self,
+        world: &mut World,
+        dt: f64,
+        reset: bool,
+        defer_oxygen: bool,
+    ) -> Result<CarryStatus, String> {
         if !(dt.is_finite() && (0.0..=MAX_PURSUIT_DT).contains(&dt)) {
             return Err(format!(
                 "dt invalido (finito en [0, {MAX_PURSUIT_DT}]): {dt}; nada cambia"
@@ -1019,7 +1117,9 @@ impl CaptureCarry<'_, '_> {
         let mut events = Vec::new();
         match &self.mode {
             Mode::Free => {
-                let st = self.preview.frame_on_contact(world, dt, reset)?;
+                let st = self
+                    .preview
+                    .frame_on_contact_owned(world, dt, reset, defer_oxygen)?;
                 events.extend(st.events.iter().cloned().map(CarryEvent::Preview));
                 if st.events.contains(&PreviewEvent::Reset) {
                     self.clear_lock_status();
@@ -1045,7 +1145,7 @@ impl CaptureCarry<'_, '_> {
                     }
                 }
             }
-            Mode::Locked(_) => self.locked_frame(world, dt, keys, &mut events)?,
+            Mode::Locked(_) => self.locked_frame(world, dt, keys, &mut events, defer_oxygen)?,
             Mode::Released(_) | Mode::Aborted => {
                 if let Mode::Released(layer) = &self.mode {
                     world.validate_solar_body_override(&layer.view())?;

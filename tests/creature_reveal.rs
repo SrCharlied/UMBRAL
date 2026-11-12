@@ -681,11 +681,12 @@ fn the_game_command_line_wires_the_reveal_and_rejects_bad_combinations() {
             stdout.contains("Revelacion por oxigeno: O2 0.25 | visibilidad 68%"),
             "{stdout}"
         );
-        assert!(stdout.contains("objetos 6 (descartados"), "{stdout}");
+        // CORRECTION03: +6 balizas integradas en el cuadro del CLI.
+        assert!(stdout.contains("objetos 12 (descartados"), "{stdout}");
         // O2 1.0 (por defecto): oculta, ni se dibuja ni se cuenta.
         let (_, stdout) = capture("o100.png", &near);
         assert!(stdout.contains("O2 1.00 | visibilidad 0%"), "{stdout}");
-        assert!(stdout.contains("objetos 5 (descartados"), "{stdout}");
+        assert!(stdout.contains("objetos 11 (descartados"), "{stdout}");
         // --creature-reveal no mueve la nave y entera es la estatica exacta.
         let (full, stdout) = capture(
             "full.png",

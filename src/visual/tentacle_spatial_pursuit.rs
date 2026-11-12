@@ -884,11 +884,10 @@ impl SpatialPursuit {
         self.drawn = false;
         Ok(report)
     }
-    /// Un paso con el estado ACTUAL del World (nave, transform de la criatura, O2 mostrado) y `dt` (s).
-    /// Valida y calcula TODO en buffers de trabajo y publica al final: con `Err` controlador, memoria,
-    /// capa, esfera y estado no cambian. Nunca escribe el World.
-    pub fn step(&mut self, world: &World, dt: f64) -> Result<SpatialFrameStatus, String> {
-        let rig = self.rig.as_ref().ok_or("persecucion sin enlazar (bind)")?;
+    /// Identidad EXACTA del bind (criatura y particion): la misma comprobacion con la que abre `step`,
+    /// sin efectos. La ruta congelada (terminal/reinicio) la reutiliza para no aceptar un World que la
+    /// ruta activa rechaza.
+    pub(crate) fn check_bound_identity(&self, world: &World) -> Result<(), String> {
         let (model, body) = self
             .bound_identity
             .as_ref()
@@ -902,6 +901,14 @@ impl SpatialPursuit {
         {
             return Err("criatura o particion distintas del bind de persecucion".into());
         }
+        Ok(())
+    }
+    /// Un paso con el estado ACTUAL del World (nave, transform de la criatura, O2 mostrado) y `dt` (s).
+    /// Valida y calcula TODO en buffers de trabajo y publica al final: con `Err` controlador, memoria,
+    /// capa, esfera y estado no cambian. Nunca escribe el World.
+    pub fn step(&mut self, world: &World, dt: f64) -> Result<SpatialFrameStatus, String> {
+        let rig = self.rig.as_ref().ok_or("persecucion sin enlazar (bind)")?;
+        self.check_bound_identity(world)?;
         if !(dt.is_finite() && (0.0..=MAX_PURSUIT_DT).contains(&dt)) {
             return Err(format!(
                 "dt invalido (finito en [0, {MAX_PURSUIT_DT}]): {dt}"

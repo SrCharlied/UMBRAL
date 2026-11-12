@@ -82,6 +82,400 @@ pub struct GameOptions {
     pub debug_oxygen: f64,
 }
 
+/// Additive runtime configuration. Existing GameOptions callers retain the default scene.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum OxygenSource {
+    #[default]
+    Legacy,
+    Real,
+    Debug,
+}
+pub struct ConfiguredGameOptions {
+    pub options: GameOptions,
+    pub gameplay_feedback: bool,
+    pub oxygen_source: OxygenSource,
+}
+impl std::ops::Deref for ConfiguredGameOptions {
+    type Target = GameOptions;
+    fn deref(&self) -> &GameOptions {
+        &self.options
+    }
+}
+impl From<GameOptions> for ConfiguredGameOptions {
+    fn from(options: GameOptions) -> Self {
+        Self {
+            options,
+            gameplay_feedback: false,
+            oxygen_source: OxygenSource::Legacy,
+        }
+    }
+}
+
+/// Acciones de Persona 2, separadas del teclado para probarlas sin ventana.
+#[derive(Clone, Copy, Debug)]
+pub enum GameplayAction {
+    ToggleOrbitAssist,
+    Restart,
+    ForceOxygen(f64),
+    RealOxygen,
+}
+
+pub fn apply_gameplay_action(world: &mut World, action: GameplayAction) {
+    match action {
+        GameplayAction::ToggleOrbitAssist => world.orbit_assist ^= true,
+        GameplayAction::Restart => world.restart_game(),
+        GameplayAction::ForceOxygen(value) => world.set_debug_oxygen(value),
+        GameplayAction::RealOxygen => world.clear_debug_oxygen(),
+    }
+}
+
+/// Teclas de juego de UN cuadro, ya leidas del frontend (ventana, replay o pruebas). `full_restart` es
+/// Shift+R y `reset` es R sin Shift. Las vistas de depuracion (F1, F3-F6), P y Esc no pasan por aqui.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FrameKeys {
+    pub full_restart: bool,
+    pub reset: bool,
+    /// 7 (preset CERCA / vista FRONTAL).
+    pub frontal: bool,
+    /// 8 (preset LEJOS / vista OBLICUA).
+    pub oblique: bool,
+    /// H.
+    pub follow: bool,
+    /// G.
+    pub target: bool,
+    /// O (asistencia orbital).
+    pub orbit_assist: bool,
+    /// 0 (O2 real).
+    pub real_oxygen: bool,
+    /// 1-4 y M/N.
+    pub oxygen: OxygenKeys,
+    /// F7 (composicion observadora).
+    pub capture_toggle: bool,
+    /// X de diagnostico.
+    pub emergency: bool,
+}
+
+impl FrameKeys {
+    /// Estado terminal (sin O2 real o victoria): nave, captura y relojes de efecto quedan congelados
+    /// hasta el reinicio completo, asi que solo Shift+R sigue disponible (USER_DECISIONS). Fuera de
+    /// terminal, las teclas no cambian.
+    pub fn gated(self, world: &World) -> Self {
+        if world.gameplay.game_over || world.gameplay.objective_complete {
+            Self {
+                full_restart: self.full_restart,
+                ..Self::default()
+            }
+        } else {
+            self
+        }
+    }
+}
+
+/// Rutas que cambian el despacho de las teclas del bucle principal.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DispatchRoute {
+    pub comparison: bool,
+    pub distant_turn: bool,
+    pub horizontal: bool,
+    pub near_creature: bool,
+    /// `--near <cuerpo>`.
+    pub near_body: Option<usize>,
+    /// Captura automatica: R/7/8/H/G se aplican en su cuadro compartido (filtradas si capturada).
+    pub auto: bool,
+}
+
+/// Despacho de las teclas de juego de UN cuadro, antes de la fisica (el mismo para la ventana y las
+/// pruebas). Devuelve las teclas solares que la captura automatica aplica en su cuadro compartido.
+pub fn dispatch_frame_keys(
+    world: &mut World,
+    mut solar_game: Option<&mut SolarGame>,
+    mut oxygen: Option<&mut OxygenTransition>,
+    route: DispatchRoute,
+    last_preset: &mut CreaturePreset,
+    keys: FrameKeys,
+) -> Result<SolarKeys, String> {
+    let keys = keys.gated(world);
+    let mut auto_solar = SolarKeys::default();
+    if keys.full_restart {
+        apply_gameplay_action(world, GameplayAction::Restart);
+        if let Some(oxygen) = oxygen.as_deref_mut() {
+            *oxygen = OxygenTransition::new(world.gameplay.oxygen01)?;
+        }
+        // Nueva partida = el arranque de la ruta (mismas colocaciones y preset que `run`), no solo la
+        // nave de inicio: --near, --near-creature y el preset LEJOS de las candidatas.
+        if let Some(index) = route.near_body {
+            world.place_near(index, 25.0)?;
+        }
+        if route.near_creature {
+            world.place_near_creature()?;
+        }
+        if route.distant_turn || route.horizontal {
+            world.place_creature_preset(CreaturePreset::Far)?;
+        }
+        *last_preset = CreaturePreset::Far;
+        if !route.auto
+            && let Some(game) = solar_game.as_deref_mut()
+        {
+            game.apply(
+                world,
+                SolarKeys {
+                    reset: true,
+                    ..SolarKeys::default()
+                },
+            )?;
+        }
+    } else if keys.reset {
+        if route.auto {
+            auto_solar.reset = true;
+        } else if let Some(game) = solar_game.as_deref_mut() {
+            // Sol con ojo: R vuelve a la vista FRONTAL (conserva O2, G, H y el reloj).
+            let reset = SolarKeys {
+                reset: true,
+                ..SolarKeys::default()
+            };
+            game.apply(world, reset)?;
+        } else if route.distant_turn || route.horizontal {
+            // Candidatas: R repite el ultimo preset (conserva O2, objetivo y H).
+            world.place_creature_preset(*last_preset)?;
+        } else if route.near_creature {
+            // Con --near-creature, R vuelve al arranque frente a la criatura.
+            world.place_near_creature()?;
+        } else {
+            world.reset_ship();
+        }
+    }
+    if keys.orbit_assist {
+        apply_gameplay_action(world, GameplayAction::ToggleOrbitAssist);
+    }
+    if keys.real_oxygen {
+        apply_gameplay_action(world, GameplayAction::RealOxygen);
+    }
+    if oxygen.is_none() {
+        // Sin --lucid-perception: el O2 salta como siempre.
+        if let Some(value) = keys.oxygen.preset {
+            world.debug_oxygen01 = value;
+        }
+        world.debug_oxygen01 = step_debug_oxygen(
+            world.debug_oxygen01,
+            keys.oxygen.increase,
+            keys.oxygen.decrease,
+        );
+    }
+    if route.distant_turn || route.horizontal {
+        for (pressed, preset) in [
+            (keys.frontal, CreaturePreset::Near),
+            (keys.oblique, CreaturePreset::Far),
+        ] {
+            if pressed {
+                *last_preset = preset;
+                world.place_creature_preset(preset)?;
+            }
+        }
+        if keys.follow {
+            // Solo cambia la eleccion: apagado vuelve al reposo/frente con su transicion.
+            if route.horizontal {
+                let active = world
+                    .creature_horizontal_follow()
+                    .is_some_and(|f| f.is_active());
+                world.set_creature_horizontal_follow_active(!active)?;
+            } else {
+                let active = world.creature_distant_turn().is_some_and(|t| t.is_active());
+                world.set_creature_distant_turn_active(!active)?;
+            }
+        }
+    }
+    if let Some(game) = solar_game {
+        let solar = SolarKeys {
+            frontal: keys.frontal,
+            oblique: keys.oblique,
+            follow: keys.follow,
+            target: keys.target,
+            reset: false,
+        };
+        if route.auto {
+            // La captura automatica aplica estas teclas en su cuadro compartido (sin R/7/8 si atrapada).
+            auto_solar = SolarKeys {
+                reset: auto_solar.reset,
+                ..solar
+            };
+        } else {
+            game.apply(world, solar)?;
+        }
+    }
+    if route.comparison && keys.target {
+        // Solo cambia la eleccion: la mirada llega con su transicion de siempre.
+        let next = match world.creature_eye_target() {
+            Some(EyeTarget::Camera) => EyeTarget::Ship,
+            _ => EyeTarget::Camera,
+        };
+        world.set_creature_eye_target(next)?;
+    }
+    Ok(auto_solar)
+}
+
+/// Feedback minimo de recoleccion/estados usando la fuente existente del equipo.
+/// No sustituye el HUD artistico de Persona 3.
+pub fn gameplay_feedback_lines(world: &World) -> Vec<String> {
+    let g = &world.gameplay;
+    let mut lines = vec![format!(
+        "OXIGENO {:.0}%  RECURSOS {}  REGISTROS {}/3",
+        g.oxygen01 * 100.0,
+        g.collected_resources,
+        g.collected_logs
+    )];
+    lines.push(if g.game_over {
+        "SIN OXIGENO - SHIFT+R: REINICIAR".into()
+    } else if g.objective_complete {
+        "OBJETIVO COMPLETO - SHIFT+R: REINICIAR".into()
+    } else if g.collected_logs >= 3 {
+        "OBJETIVO: ACERCATE AL SOL".into()
+    } else {
+        "OBJETIVO: REUNE LOS TRES REGISTROS DORADOS".into()
+    });
+    lines.push(format!(
+        "O: ASISTENCIA {}  SHIFT+R: REINICIAR",
+        if world.orbit_assist { "ON" } else { "OFF" }
+    ));
+    let target = g
+        .logs
+        .iter()
+        .filter(|log| !log.anchor.collected)
+        .filter_map(|log| {
+            log.anchor
+                .position(&world.system, world.time)
+                .map(|p| (log, p))
+        })
+        .min_by(|(_, a), (_, b)| {
+            (*a - world.ship.position)
+                .length()
+                .total_cmp(&(*b - world.ship.position).length())
+        });
+    if let Some((log, position)) = target {
+        let delta = position - world.ship.position;
+        let direction = delta.normalized();
+        let horizontal = direction.dot(world.ship.right());
+        let vertical = direction.dot(world.ship.up());
+        let forward = direction.dot(world.ship.forward());
+        lines.push(format!(
+            "DESTINO REGISTRO {}: {:.0} U - {} {} {}",
+            log.anchor.id + 1,
+            delta.length(),
+            if forward < 0.0 { "ATRAS" } else { "FRENTE" },
+            if horizontal > 0.15 {
+                "DERECHA"
+            } else if horizontal < -0.15 {
+                "IZQUIERDA"
+            } else {
+                "CENTRO"
+            },
+            if vertical > 0.15 {
+                "ARRIBA"
+            } else if vertical < -0.15 {
+                "ABAJO"
+            } else {
+                "NIVEL"
+            }
+        ));
+    }
+    if world.forced_oxygen.is_some() {
+        lines.push(format!(
+            "VISUAL DEBUG {:.0}% - 0: OXIGENO REAL",
+            world.oxygen01() * 100.0
+        ));
+    }
+    if let Some(log) = g
+        .last_log
+        .and_then(|id| g.logs.iter().find(|log| log.anchor.id == id))
+    {
+        lines.push(format!("{}: {}", log.title, log.text));
+    }
+    lines
+}
+
+pub fn draw_gameplay_feedback(fb: &mut Framebuffer, world: &World) {
+    let scale = if fb.width >= 960 && fb.height >= 540 {
+        2
+    } else {
+        1
+    };
+    let columns = fb.width.saturating_sub(16) / (6 * scale);
+    if columns == 0 {
+        return;
+    }
+    let mut lines = Vec::new();
+    for text in gameplay_feedback_lines(world) {
+        let mut line = String::new();
+        for word in text.split_whitespace() {
+            if !line.is_empty() && line.len() + word.len() + 1 > columns {
+                lines.push(line);
+                line = String::new();
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+        if !line.is_empty() {
+            lines.push(line);
+        }
+    }
+    let row_height = 8 * scale + 2;
+    lines.truncate((fb.height / 3 / row_height).max(1));
+    let y = fb.height.saturating_sub(lines.len() * row_height + 8);
+    for py in y..fb.height {
+        for x in 0..fb.width {
+            fb.put_pixel(x, py, 0x080e18);
+        }
+    }
+    for (i, line) in lines.iter().enumerate() {
+        crate::debug::overlay::draw_text(fb, 8, y + 4 + i * row_height, scale, 0xdce8ed, line);
+    }
+}
+
+/// Capas de presentacion sobre la escena ya dibujada.
+#[derive(Clone, Copy, Debug)]
+pub struct PresentationLayers<'a> {
+    /// Lineas del overlay (F1) si esta visible.
+    pub overlay: Option<&'a [String]>,
+    pub comparison: bool,
+    pub distant_turn: bool,
+    pub horizontal: bool,
+    /// Ultimo preset de las candidatas (sus paneles).
+    pub preset: CreaturePreset,
+    /// Franja tecnica de Persona 2: OPCIONAL (`--gameplay-feedback`), nunca por defecto.
+    pub gameplay_feedback: bool,
+    /// Percepcion lucida: ultimo paso de color (con O2 0 no queda texto brillante).
+    pub perception: bool,
+}
+
+/// Compositor UNICO de la presentacion para el cuadro headless, la ventana y `P`: overlay, paneles de
+/// las candidatas, franja tecnica opcional y, al final, la percepcion. El mismo orden en todas las rutas.
+pub fn compose_presentation(
+    framebuffer: &mut Framebuffer,
+    world: &World,
+    layers: &PresentationLayers<'_>,
+) -> Result<(), String> {
+    if let Some(lines) = layers.overlay {
+        draw_overlay(framebuffer, lines);
+    }
+    if layers.comparison {
+        draw_comparison(framebuffer, world);
+    }
+    if layers.distant_turn {
+        draw_distant_turn(framebuffer, world, layers.preset);
+    }
+    if layers.horizontal {
+        draw_horizontal_follow(framebuffer, world, layers.preset);
+    }
+    if layers.gameplay_feedback {
+        draw_gameplay_feedback(framebuffer, world);
+    }
+    if layers.perception {
+        apply_lucid_perception(framebuffer, world)?;
+    }
+    Ok(())
+}
+
 fn keyboard_input(window: &Window) -> ShipInput {
     let axis = |plus: &[Key], minus: &[Key]| {
         let down = |keys: &[Key]| keys.iter().any(|&k| window.is_key_down(k));
@@ -121,7 +515,8 @@ fn describe(stats: &RenderStats) -> String {
 }
 
 /// Juego normal: sin la comparacion de la mirada.
-pub fn run_game(options: GameOptions) -> Result<(), String> {
+pub fn run_game(options: impl Into<ConfiguredGameOptions>) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     run(options, Route::default())
 }
 
@@ -154,9 +549,10 @@ pub struct PerceptionRoute {
 /// que la linea de comandos: tamano, tiempo, O2, los guards del juego normal o del Sol con ojo y
 /// `--output` `.png` (tambien sin criatura) distinto de las entradas.
 pub fn run_game_with_lucid_perception(
-    options: GameOptions,
+    options: impl Into<ConfiguredGameOptions>,
     route: PerceptionRoute,
 ) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     run_with_perception(options, route, false)
 }
 
@@ -167,18 +563,20 @@ pub fn run_game_with_lucid_perception(
 /// ultimo paso de color. Los ojos usan el O2 MOSTRADO, la camara real y la nave real. Valida antes
 /// de cualquier IO lo mismo que `run_game_with_lucid_perception`.
 pub fn run_game_with_watching_stars(
-    options: GameOptions,
+    options: impl Into<ConfiguredGameOptions>,
     route: PerceptionRoute,
 ) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     run_with_perception(options, route, true)
 }
 
 /// Guards comunes de las dos entradas con percepcion (antes de cualquier IO) y su `Route`.
 fn run_with_perception(
-    options: GameOptions,
+    options: impl Into<ConfiguredGameOptions>,
     route: PerceptionRoute,
     watching: bool,
 ) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     validate_command_line_values(&options)?;
     if route.solar {
         validate_solar_options(&options)?;
@@ -203,7 +601,10 @@ fn run_with_perception(
 /// el shader de Antena; con O2 >= 50 % el cuadro es el de siempre. Admite la criatura estatica
 /// y su revelacion como el juego normal. Valida antes de cualquier IO lo mismo que la linea de
 /// comandos: tamano, tiempo, O2, modos de la criatura, arranque y alias de `--output`.
-pub fn run_game_with_lucid_surface(options: GameOptions) -> Result<(), String> {
+pub fn run_game_with_lucid_surface(
+    options: impl Into<ConfiguredGameOptions>,
+) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     validate_command_line_values(&options)?;
     validate_normal_options(&options)?;
     run(
@@ -272,7 +673,10 @@ fn validate_command_line_values(options: &GameOptions) -> Result<(), String> {
 /// Juego con la comparacion A/B de la mirada (`--creature-eye-compare`): arranca mirando a la
 /// camara, `G` alterna nave/camara y un panel inferior muestra el estado (tambien headless).
 /// Valida antes de cualquier IO que la mirada (y por tanto etapas y criatura) este pedida.
-pub fn run_game_with_eye_comparison(options: GameOptions) -> Result<(), String> {
+pub fn run_game_with_eye_comparison(
+    options: impl Into<ConfiguredGameOptions>,
+) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     validate_comparison_options(&options)?;
     run(
         options,
@@ -287,7 +691,8 @@ pub fn run_game_with_eye_comparison(options: GameOptions) -> Result<(), String> 
 /// comparacion entera mas el giro, arrancando en el preset `LEJOS`; `H` enciende/apaga el
 /// giro, `7`/`8` colocan los presets CERCA/LEJOS y `R` repite el ultimo. Valida antes de
 /// cualquier IO con los mismos guards que la comparacion.
-pub fn run_game_with_distant_turn(options: GameOptions) -> Result<(), String> {
+pub fn run_game_with_distant_turn(options: impl Into<ConfiguredGameOptions>) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     validate_comparison_options(&options)?;
     run(
         options,
@@ -304,7 +709,10 @@ pub fn run_game_with_distant_turn(options: GameOptions) -> Result<(), String> {
 /// seguimiento, arrancando en el preset `LEJOS`; `H` enciende/apaga (apagado vuelve al frente),
 /// `7`/`8` colocan CERCA/LEJOS y `R` repite el ultimo. Valida antes de cualquier IO con los mismos
 /// guards que la comparacion.
-pub fn run_game_with_horizontal_follow(options: GameOptions) -> Result<(), String> {
+pub fn run_game_with_horizontal_follow(
+    options: impl Into<ConfiguredGameOptions>,
+) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     validate_comparison_options(&options)?;
     run(
         options,
@@ -321,7 +729,8 @@ pub fn run_game_with_horizontal_follow(options: GameOptions) -> Result<(), Strin
 /// implicitos (`creature_reveal_stages`/`creature_eye_follow` se ignoran). Valida antes de
 /// cualquier IO con los mismos guards que la linea de comandos: criatura sin `near`, sin V1 ni
 /// `--near`, y alias de `--output`. Sin panel por defecto: el estado va en el titulo.
-pub fn run_game_with_solar_reveal(options: GameOptions) -> Result<(), String> {
+pub fn run_game_with_solar_reveal(options: impl Into<ConfiguredGameOptions>) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     validate_solar_options(&options)?;
     run(
         options,
@@ -335,7 +744,10 @@ pub fn run_game_with_solar_reveal(options: GameOptions) -> Result<(), String> {
 /// Sol con ojo con la superficie lucida aprobada en Antena (`--creature-solar-reveal
 /// --lucid-surface`): la misma composicion y los mismos guards que `run_game_with_solar_reveal`,
 /// mas los de tamano, tiempo y O2 de la linea de comandos, todo antes de cualquier IO.
-pub fn run_game_with_solar_and_lucid_surface(options: GameOptions) -> Result<(), String> {
+pub fn run_game_with_solar_and_lucid_surface(
+    options: impl Into<ConfiguredGameOptions>,
+) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     validate_command_line_values(&options)?;
     validate_solar_options(&options)?;
     run(
@@ -354,10 +766,11 @@ pub fn run_game_with_solar_and_lucid_surface(options: GameOptions) -> Result<(),
 /// ruta: tamano, tiempo, O2 y alias de `--output`, mas los guards del juego normal o del Sol con
 /// ojo.
 pub fn run_game_with_void_eye(
-    options: GameOptions,
+    options: impl Into<ConfiguredGameOptions>,
     lucid: bool,
     solar: bool,
 ) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     validate_command_line_values(&options)?;
     if solar {
         validate_solar_options(&options)?;
@@ -402,6 +815,9 @@ pub const MAX_PHYSICS_DT: f64 = 0.1;
 /// los segundos **reales**, sin el limite y sin que `F5` los congele.
 pub fn advance_frame(world: &mut World, input: &ShipInput, elapsed: f64) {
     world.update(input, elapsed.min(MAX_PHYSICS_DT));
+    if world.gameplay.game_over || world.gameplay.objective_complete {
+        return;
+    }
     world.update_creature_reveal(elapsed);
     world.update_creature_eye_follow(elapsed);
 }
@@ -418,12 +834,48 @@ pub fn advance_perception_frame(
     input: &ShipInput,
     elapsed: f64,
 ) -> Result<(), String> {
+    advance_perception_frame_owned(world, oxygen, keys, input, elapsed, false, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn advance_perception_frame_owned(
+    world: &mut World,
+    oxygen: &mut OxygenTransition,
+    keys: OxygenKeys,
+    input: &ShipInput,
+    elapsed: f64,
+    captured: bool,
+    body_held: bool,
+) -> Result<(), String> {
     let mut next = *oxygen;
     next.press(keys)?;
+    next.advance(0.0)?;
+    // Validate elapsed before any world mutation. Physics consumes the clamped dt.
+    let mut checked = next;
+    checked.advance(elapsed)?;
+    if world.gameplay.game_over || world.gameplay.objective_complete {
+        return Ok(());
+    }
+    world.update_with_pose_owner(input, elapsed.min(MAX_PHYSICS_DT), captured);
+    if world.gameplay.game_over || world.gameplay.objective_complete {
+        return Ok(());
+    }
+    if keys.preset.is_some() || keys.increase || keys.decrease {
+        world.forced_oxygen = Some(next.target());
+    }
+    next.press(OxygenKeys {
+        preset: Some(world.forced_oxygen.unwrap_or(world.gameplay.oxygen01)),
+        ..OxygenKeys::default()
+    })?;
     let shown = next.advance(elapsed)?;
     *oxygen = next;
-    world.debug_oxygen01 = shown;
-    advance_frame(world, input, elapsed);
+    world.publish_visual_oxygen(shown);
+    world.update_creature_reveal(elapsed);
+    if body_held {
+        world.update_creature_eye_follow_body_held(elapsed);
+    } else {
+        world.update_creature_eye_follow(elapsed);
+    }
     Ok(())
 }
 
@@ -434,12 +886,13 @@ pub fn advance_perception_frame(
 /// rutas: tamano, tiempo, O2, guards del Sol con ojo, `--output` (`.png` con percepcion) y las rutas y
 /// el reloj del pedido. Nunca escribe nave, camara, input, O2 ni el reloj del mundo.
 pub fn run_game_with_tentacle_capture(
-    options: GameOptions,
+    options: impl Into<ConfiguredGameOptions>,
     route: PerceptionRoute,
     perception: bool,
     watching: bool,
     capture: TentacleCaptureRequest,
 ) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     validate_command_line_values(&options)?;
     if !route.solar {
         return Err(
@@ -477,12 +930,13 @@ pub fn run_game_with_tentacle_capture(
 /// cualquier IO lo mismo que la composicion observadora; protege las MISMAS entradas efectivas
 /// (SC01-MTL) antes de cargar y antes de cada guardado. Nunca escribe nave, camara, input, O2 ni reloj.
 pub fn run_game_with_tentacle_live_pursuit(
-    options: GameOptions,
+    options: impl Into<ConfiguredGameOptions>,
     route: PerceptionRoute,
     perception: bool,
     watching: bool,
     request: LivePursuitRequest,
 ) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     validate_command_line_values(&options)?;
     if !route.solar {
         return Err(
@@ -518,12 +972,13 @@ pub fn run_game_with_tentacle_live_pursuit(
 /// la deformacion espacial (`visual::tentacle_spatial_pursuit`). Protege las MISMAS entradas efectivas
 /// (SC01-MTL) antes de cargar y antes de cada guardado. Nunca escribe nave, camara, input, O2 ni reloj.
 pub fn run_game_with_tentacle_spatial_pursuit(
-    options: GameOptions,
+    options: impl Into<ConfiguredGameOptions>,
     route: PerceptionRoute,
     perception: bool,
     watching: bool,
     request: LivePursuitRequest,
 ) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     validate_command_line_values(&options)?;
     if !route.solar {
         return Err(
@@ -560,13 +1015,14 @@ pub fn run_game_with_tentacle_spatial_pursuit(
 /// contacto (`visual::tentacle_auto_capture`). Requiere la percepcion (O2 gradual). Valida ANTES de cualquier
 /// IO lo mismo que la persecucion espacial y, con `replay`, la carpeta del replay (existente y vacia).
 pub fn run_game_with_tentacle_auto_capture(
-    options: GameOptions,
+    options: impl Into<ConfiguredGameOptions>,
     route: PerceptionRoute,
     perception: bool,
     watching: bool,
     request: LivePursuitRequest,
     replay: Option<PathBuf>,
 ) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     validate_command_line_values(&options)?;
     if !route.solar {
         return Err(
@@ -682,7 +1138,8 @@ fn draw_horizontal_follow(
     );
 }
 
-fn run(options: GameOptions, route: Route) -> Result<(), String> {
+fn run(options: impl Into<ConfiguredGameOptions>, route: Route) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     run_with_tentacle(options, route, None, TentacleRoute::Observer)
 }
 
@@ -1057,6 +1514,19 @@ impl Pursuit {
             Self::Spatial(p) => p.step(world, dt).map(|_| ()),
         }
     }
+    /// Nueva partida: el mismo arranque que `run` (bind con el World actual + paso 0).
+    fn restart(&mut self, world: &World) -> Result<(), String> {
+        match self {
+            Self::Live(p) => {
+                p.bind(world)?;
+                p.step(world, 0.0).map(|_| ())
+            }
+            Self::Spatial(p) => {
+                p.bind(world)?;
+                p.step(world, 0.0).map(|_| ())
+            }
+        }
+    }
     fn body_override(&self) -> Option<crate::scene::world::SolarBodyOverride<'_>> {
         match self {
             Self::Live(p) => p.body_override(),
@@ -1074,11 +1544,12 @@ impl Pursuit {
 /// El bucle de siempre; `capture` (solo con el Sol con ojo) anade la composicion observadora o, segun
 /// `kind`, la persecucion viva o la espacial (mismos paquetes y la misma proteccion de entradas).
 fn run_with_tentacle(
-    options: GameOptions,
+    options: impl Into<ConfiguredGameOptions>,
     route: Route,
     capture_request: Option<TentacleCaptureRequest>,
     kind: TentacleRoute,
 ) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     run_with_tentacle_io(options, route, capture_request, kind, None)
 }
 
@@ -1511,12 +1982,13 @@ mod auto_replay {
 /// `run_with_tentacle` con el origen del bucle elegido: la ventana o, con `replay`, el replay guionado de la
 /// captura automatica (mismo cuerpo de bucle).
 fn run_with_tentacle_io(
-    options: GameOptions,
+    options: impl Into<ConfiguredGameOptions>,
     route: Route,
     capture_request: Option<TentacleCaptureRequest>,
     kind: TentacleRoute,
     replay: Option<PathBuf>,
 ) -> Result<(), String> {
+    let options: ConfiguredGameOptions = options.into();
     let Route {
         comparison,
         distant_turn,
@@ -1547,7 +2019,11 @@ fn run_with_tentacle_io(
     })?;
     let mut world = World::new(ship_model, width as f64 / height as f64)?;
     world.time = options.time;
-    world.debug_oxygen01 = options.debug_oxygen;
+    match options.oxygen_source {
+        OxygenSource::Debug => world.set_debug_oxygen(options.debug_oxygen),
+        OxygenSource::Real => world.clear_debug_oxygen(),
+        OxygenSource::Legacy => world.debug_oxygen01 = options.debug_oxygen,
+    }
     world.toggles.frustum_culling = options.culling;
     world.toggles.lod = options.lod;
     if lucid {
@@ -1571,7 +2047,7 @@ fn run_with_tentacle_io(
     }
     // Objetivo manual y O2 mostrado: arrancan EXACTAMENTE en --debug-oxygen (sin presimular).
     let mut oxygen = if perception {
-        Some(OxygenTransition::new(options.debug_oxygen)?)
+        Some(OxygenTransition::new(world.debug_oxygen01)?)
     } else {
         None
     };
@@ -1867,6 +2343,14 @@ fn run_with_tentacle_io(
     }
     let mut capture_note = String::new();
     let mut last_preset = CreaturePreset::Far;
+    let dispatch_route = DispatchRoute {
+        comparison,
+        distant_turn,
+        horizontal,
+        near_creature,
+        near_body: options.near,
+        auto: auto.is_some(),
+    };
     // El modo solar dibuja siempre con su cuadro (inicial, headless y cada cuadro del bucle); con
     // `--watching-stars` el mismo helper pone los ojos sobre la escena, antes de overlays y post.
     // La capa Body alternativa (composicion activa) entra en la escena, antes de los ojos.
@@ -1928,30 +2412,29 @@ fn run_with_tentacle_io(
     }
     let mut show_overlay = options.overlay;
     if options.headless {
-        if show_overlay {
-            let lines = overlay_lines(
+        let lines = show_overlay.then(|| {
+            overlay_lines(
                 None,
                 &stats,
                 &overlay_state(&world),
                 world.ship.speed,
                 world.debug_oxygen01,
                 world.time,
-            );
-            draw_overlay(&mut framebuffer, &lines);
-        }
-        if comparison {
-            draw_comparison(&mut framebuffer, &world);
-        }
-        if distant_turn {
-            draw_distant_turn(&mut framebuffer, &world, last_preset);
-        }
-        if horizontal {
-            draw_horizontal_follow(&mut framebuffer, &world, last_preset);
-        }
-        if perception {
-            // Ultimo paso de color, tras overlay y paneles: con O2 0 no queda texto brillante.
-            apply_lucid_perception(&mut framebuffer, &world)?;
-        }
+            )
+        });
+        compose_presentation(
+            &mut framebuffer,
+            &world,
+            &PresentationLayers {
+                overlay: lines.as_deref(),
+                comparison,
+                distant_turn,
+                horizontal,
+                preset: last_preset,
+                gameplay_feedback: options.gameplay_feedback,
+                perception,
+            },
+        )?;
         if let Some(guard) = &output_guard {
             guard.preflight(&options.output)?;
         }
@@ -1977,30 +2460,39 @@ fn run_with_tentacle_io(
         let elapsed = io.elapsed();
         // Limitar dt evita saltos enormes tras arrastrar la ventana o pausar el proceso.
         let dt = elapsed.min(MAX_PHYSICS_DT);
-        // Captura automatica: R se decide en su cuadro compartido (bloqueada con la nave capturada).
-        let mut auto_solar = SolarKeys::default();
         let mut auto_frame: Option<AutoFrame> = None;
-
-        if io.pressed(Key::R) {
-            if auto.is_some() {
-                auto_solar.reset = true;
-            } else if let Some(game) = &mut solar_game {
-                // Sol con ojo: R vuelve a la vista FRONTAL (conserva O2, G, H y el reloj).
-                let reset = SolarKeys {
-                    reset: true,
-                    ..SolarKeys::default()
-                };
-                game.apply(&mut world, reset)?;
-            } else if distant_turn || horizontal {
-                // Candidatas: R repite el ultimo preset (conserva O2, objetivo y H).
-                world.place_creature_preset(last_preset)?;
-            } else if near_creature {
-                // Con --near-creature, R vuelve al arranque frente a la criatura.
-                world.place_near_creature()?;
-            } else {
-                world.reset_ship();
+        let shift = io.down(Key::LeftShift) || io.down(Key::RightShift);
+        let mut preset = None;
+        for (key, value) in [
+            (Key::Key1, 1.0),
+            (Key::Key2, 0.5),
+            (Key::Key3, 0.25),
+            (Key::Key4, 0.05),
+        ] {
+            if io.pressed(key) {
+                preset = Some(value);
             }
         }
+        // Una pulsacion por paso, sin repeticion al mantener la tecla. Los presets 1-4
+        // siguen disponibles; M/N se aplican despues si coinciden en el mismo cuadro.
+        let keys = FrameKeys {
+            full_restart: io.pressed(Key::R) && shift,
+            reset: io.pressed(Key::R) && !shift,
+            frontal: io.pressed(Key::Key7),
+            oblique: io.pressed(Key::Key8),
+            follow: io.pressed(Key::H),
+            target: io.pressed(Key::G),
+            orbit_assist: io.pressed(Key::O),
+            real_oxygen: io.pressed(Key::Key0),
+            oxygen: OxygenKeys {
+                preset,
+                increase: io.pressed(Key::M),
+                decrease: io.pressed(Key::N),
+            },
+            capture_toggle: io.pressed(Key::F7),
+            emergency: io.pressed(Key::X),
+        }
+        .gated(&world);
         if io.pressed(Key::F3) {
             world.toggles.frustum_culling ^= true;
         }
@@ -2016,84 +2508,27 @@ fn run_with_tentacle_io(
         if io.pressed(Key::F5) {
             world.toggles.freeze_orbits ^= true;
         }
-        let mut preset = None;
-        for (key, value) in [
-            (Key::Key1, 1.0),
-            (Key::Key2, 0.5),
-            (Key::Key3, 0.25),
-            (Key::Key4, 0.05),
-        ] {
-            if io.pressed(key) {
-                preset = Some(value);
+        // Captura automatica: R se decide en su cuadro compartido (bloqueada con la nave capturada).
+        let auto_solar = dispatch_frame_keys(
+            &mut world,
+            solar_game.as_mut(),
+            oxygen.as_mut(),
+            dispatch_route,
+            &mut last_preset,
+            keys,
+        )?;
+        if keys.full_restart {
+            // Estados no automaticos de la nueva partida por sus APIs existentes: la composicion se
+            // cancela y la persecucion se reenlaza como al arrancar (bind + paso 0).
+            if let Some(debug) = &mut capture {
+                debug.cancel();
             }
-        }
-        // Una pulsacion por paso, sin repeticion al mantener la tecla. Los presets 1-4
-        // siguen disponibles; M/N se aplican despues si coinciden en el mismo cuadro.
-        let oxygen_keys = OxygenKeys {
-            preset,
-            increase: io.pressed(Key::M),
-            decrease: io.pressed(Key::N),
-        };
-        if oxygen.is_none() {
-            // Sin --lucid-perception: el O2 salta como siempre.
-            if let Some(value) = oxygen_keys.preset {
-                world.debug_oxygen01 = value;
+            if let Some(p) = pursuit.as_mut() {
+                p.restart(&world)?;
             }
-            world.debug_oxygen01 = step_debug_oxygen(
-                world.debug_oxygen01,
-                oxygen_keys.increase,
-                oxygen_keys.decrease,
-            );
+            capture_note.clear();
         }
-        if distant_turn || horizontal {
-            for (key, preset) in [
-                (Key::Key7, CreaturePreset::Near),
-                (Key::Key8, CreaturePreset::Far),
-            ] {
-                if io.pressed(key) {
-                    last_preset = preset;
-                    world.place_creature_preset(preset)?;
-                }
-            }
-            if io.pressed(Key::H) {
-                // Solo cambia la eleccion: apagado vuelve al reposo/frente con su transicion.
-                if horizontal {
-                    let active = world
-                        .creature_horizontal_follow()
-                        .is_some_and(|f| f.is_active());
-                    world.set_creature_horizontal_follow_active(!active)?;
-                } else {
-                    let active = world.creature_distant_turn().is_some_and(|t| t.is_active());
-                    world.set_creature_distant_turn_active(!active)?;
-                }
-            }
-        }
-        if let Some(game) = &mut solar_game {
-            let keys = SolarKeys {
-                frontal: io.pressed(Key::Key7),
-                oblique: io.pressed(Key::Key8),
-                follow: io.pressed(Key::H),
-                target: io.pressed(Key::G),
-                reset: false,
-            };
-            if auto.is_some() {
-                // La captura automatica aplica estas teclas en su cuadro compartido (sin R/7/8 si atrapada).
-                auto_solar = SolarKeys {
-                    reset: auto_solar.reset,
-                    ..keys
-                };
-            } else {
-                game.apply(&mut world, keys)?;
-            }
-        }
-        if comparison && io.pressed(Key::G) {
-            // Solo cambia la eleccion: la mirada llega con su transicion de siempre.
-            let next = match world.creature_eye_target() {
-                Some(EyeTarget::Camera) => EyeTarget::Ship,
-                _ => EyeTarget::Camera,
-            };
-            world.set_creature_eye_target(next)?;
-        }
+        let oxygen_keys = keys.oxygen;
         // Fisica con `dt` limitado; revelacion y mirada con los segundos reales, hacia la nave
         // ya movida (F5 no las congela). Con las candidatas avanza antes el giro global o el
         // seguimiento y el ojo los compensa.
@@ -2113,7 +2548,7 @@ fn run_with_tentacle_io(
                     ship: io.ship_input(),
                     oxygen: oxygen_keys,
                     solar: auto_solar,
-                    emergency: io.pressed(Key::X),
+                    emergency: keys.emergency,
                 },
                 elapsed,
             )?;
@@ -2151,10 +2586,14 @@ fn run_with_tentacle_io(
                 None => advance_frame(&mut world, &io.ship_input(), elapsed),
             }
         }
+        // Terminal: relojes de efecto congelados hasta Shift+R (composicion y persecucion no avanzan).
+        let terminal = world.gameplay.game_over || world.gameplay.objective_complete;
         if let Some(debug) = capture.as_mut() {
             // Reloj propio con segundos REALES; F7 toma la instantanea tras la fisica del cuadro.
-            debug.advance(elapsed)?;
-            if io.pressed(Key::F7) {
+            if !terminal {
+                debug.advance(elapsed)?;
+            }
+            if keys.capture_toggle {
                 match debug.toggle(&world) {
                     Ok(CaptureToggle::Activated(s)) => {
                         capture_note.clear();
@@ -2183,7 +2622,7 @@ fn run_with_tentacle_io(
                 debug.cancel();
             }
         }
-        if let Some(p) = pursuit.as_mut() {
+        if let Some(p) = pursuit.as_mut().filter(|_| !terminal) {
             // Tras la fisica del cuadro: posicion ACTUAL de la nave, transform ACTUAL de la criatura
             // y O2 mostrado, con el mismo `dt` limitado de la nave. Un `Err` no cambia nada: se dibuja
             // el ultimo estado publicado y se avisa (sin cancelar ni ocultar).
@@ -2208,30 +2647,30 @@ fn run_with_tentacle_io(
         )?
         .stats;
 
-        if show_overlay {
-            let lines = overlay_lines(
+        // El mismo compositor que headless: la ventana y `P` muestran el cuadro final.
+        let lines = show_overlay.then(|| {
+            overlay_lines(
                 Some(fps),
                 &stats,
                 &overlay_state(&world),
                 world.ship.speed,
                 world.debug_oxygen01,
                 world.time,
-            );
-            draw_overlay(&mut framebuffer, &lines);
-        }
-        if comparison {
-            draw_comparison(&mut framebuffer, &world);
-        }
-        if distant_turn {
-            draw_distant_turn(&mut framebuffer, &world, last_preset);
-        }
-        if horizontal {
-            draw_horizontal_follow(&mut framebuffer, &world, last_preset);
-        }
-        if perception {
-            // El mismo ultimo paso que headless: la ventana y `P` muestran el cuadro final.
-            apply_lucid_perception(&mut framebuffer, &world)?;
-        }
+            )
+        });
+        compose_presentation(
+            &mut framebuffer,
+            &world,
+            &PresentationLayers {
+                overlay: lines.as_deref(),
+                comparison,
+                distant_turn,
+                horizontal,
+                preset: last_preset,
+                gameplay_feedback: options.gameplay_feedback,
+                perception,
+            },
+        )?;
         if io.pressed(Key::P) {
             if let Some(guard) = &output_guard {
                 guard.preflight(&options.output)?;
