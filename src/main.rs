@@ -43,6 +43,37 @@ use umbral::{
 /// los 120 s. `L` sigue alternando 420/120/60/30 s.
 const DEFAULT_GAME_OXYGEN_SECONDS: f64 = 120.0;
 
+/// Archivos del monstruo publicados en `assets/creature` (ver su README).
+struct CreatureAssets {
+    model: PathBuf,
+    texture: PathBuf,
+    capture: PathBuf,
+    growth: PathBuf,
+    correspondence: PathBuf,
+}
+
+/// Rutas del monstruo dentro del repositorio, o `None` si falta alguno (clon sin assets).
+fn default_creature_assets() -> Option<CreatureAssets> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/creature");
+    let assets = CreatureAssets {
+        model: dir.join("model/Meshy_AI_la_vigilia_remesh_30k_20261024_texture_remesh_tri.obj"),
+        texture: dir.join("texture_1024_linear_box_diagnostic.png"),
+        capture: dir.join("capture_v2"),
+        growth: dir.join("growth_package.txt"),
+        correspondence: dir.join("arm_correspondence.txt"),
+    };
+    [
+        &assets.model,
+        &assets.texture,
+        &assets.capture,
+        &assets.growth,
+        &assets.correspondence,
+    ]
+    .iter()
+    .all(|p| p.exists())
+    .then_some(assets)
+}
+
 fn positive_argument(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<usize, String> {
     let value = args
         .next()
@@ -221,6 +252,36 @@ CAPTURA AUTOMATICA por contacto (GT3, opt-in): --tentacle-auto-capture (requiere
         lucid_surface = true;
         void_eye = true;
         oxygen_seconds.get_or_insert(DEFAULT_GAME_OXYGEN_SECONDS);
+        // El monstruo «La Vigilia» (assets/creature): Sol con ojo y captura automatica del
+        // tentaculo, si no se pidio otra configuracion de criatura ni `--near` (incompatible con
+        // el Sol con ojo) y los archivos publicados estan en el repositorio.
+        let untouched = creature_model.is_none()
+            && creature_texture.is_none()
+            && !near_creature
+            && near.is_none()
+            && !creature_reveal
+            && !creature_reveal_stages
+            && !creature_eye_follow
+            && !creature_eye_compare
+            && !creature_distant_turn
+            && !creature_horizontal_follow
+            && !creature_solar_reveal
+            && !live_pursuit
+            && !spatial_pursuit
+            && !auto_capture
+            && !capture_flags.enabled
+            && capture_flags.capture_dir.is_none()
+            && capture_flags.growth_package.is_none()
+            && capture_flags.correspondence.is_none();
+        if untouched && let Some(assets) = default_creature_assets() {
+            creature_model = Some(assets.model);
+            creature_texture = Some(assets.texture);
+            capture_flags.capture_dir = Some(assets.capture);
+            capture_flags.growth_package = Some(assets.growth);
+            capture_flags.correspondence = Some(assets.correspondence);
+            creature_solar_reveal = true;
+            auto_capture = true;
+        }
     }
     // Composicion observadora del tentaculo (opt-in): sus combinaciones antes de cualquier archivo.
     capture_flags.solar = creature_solar_reveal;

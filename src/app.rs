@@ -32,6 +32,7 @@ use crate::{
             EndingClock, EndingKind, EndingSummary, FULLY_SHOWN as ENDING_FULLY_SHOWN, draw_ending,
         },
         lucid_game::set_lucid_surface,
+        monster_death::MonsterDeath,
         perception_game::{
             OXYGEN_TRANSITION_RATE, OxygenKeys, OxygenTransition, apply_lucid_perception,
             perception_title, ship_focus,
@@ -108,6 +109,9 @@ pub struct ConfiguredGameOptions {
 /// Ritmos de consumo que alterna la tecla `L`: segundos para vaciar el tanque completo.
 /// 420 s es el juego normal; los demas sirven para demostrar muerte, percepcion y ojos.
 pub const OXYGEN_PACE_SECONDS: [f64; 4] = [420.0, 120.0, 60.0, 30.0];
+
+/// O2 que da cada tanque en la experiencia de presentacion (el juego clasico da 0.15).
+pub const PRESENTATION_TANK_RECOVERY: f64 = 0.25;
 
 /// Segundos que dura el tanque completo con el consumo actual (`inf` si no se consume).
 pub fn oxygen_tank_seconds(world: &World) -> f64 {
@@ -526,6 +530,7 @@ pub fn compose_presentation(
     // percepcion para que sigan visibles con O2 bajo, antes del final.
     if world.sectors.is_some() {
         crate::visual::markers::draw_markers(framebuffer, world);
+        crate::visual::markers::draw_oxygen_hud(framebuffer, world);
     }
     if let Some(seconds) = layers.ending
         && let Some(summary) = EndingSummary::from_gameplay(&world.gameplay, world.time)
@@ -931,8 +936,15 @@ pub(crate) fn advance_perception_frame_owned(
     world.publish_visual_oxygen(shown);
     // Presentacion: con un objetivo manual (1-4, M/N), el O2 REAL sigue al mostrado. Al llegar
     // la pantalla a negro (O2 0) el real tambien es 0 y el siguiente cuadro es la muerte.
-    if world.oxygen_keys_drive_real && world.forced_oxygen.is_some() {
+    // Al alcanzar el objetivo, el forzado se suelta: desde ahi el mostrado vuelve a seguir al
+    // real, asi los tanques suben el O2 (y los ojos se van) aunque antes se usara N.
+    if world.oxygen_keys_drive_real
+        && let Some(target) = world.forced_oxygen
+    {
         world.gameplay.oxygen01 = shown;
+        if shown == target {
+            world.forced_oxygen = None;
+        }
     }
     world.update_creature_reveal(elapsed);
     if body_held {
@@ -2116,6 +2128,7 @@ fn run_with_tentacle_io(
     if options.presentation {
         world.enable_sectors();
         world.oxygen_keys_drive_real = true;
+        world.gameplay.settings.pickup_recovery = PRESENTATION_TANK_RECOVERY;
         println!(
             "Presentacion: espacio procedural por sectores, tanques de O2 visibles y marcadores; N/M y 1-4 arrastran el O2 real"
         );
@@ -2535,6 +2548,10 @@ fn run_with_tentacle_io(
     let mut fps = 60.0;
     let (mut frames, mut title_clock, mut title_frames) = (0usize, 0.0, 0u32);
     let mut ending_clock = EndingClock::new();
+    // Muerte por el monstruo (presentacion con la criatura): al llegar el O2 a 0 te jala, te
+    // atrapa con la captura aprobada y te mata.
+    let monster_mode = options.presentation && auto.is_some();
+    let mut monster = MonsterDeath::new();
     while io.is_open() && !io.down(Key::Escape) {
         let elapsed = io.elapsed();
         // Limitar dt evita saltos enormes tras arrastrar la ventana o pausar el proceso.
@@ -2604,6 +2621,7 @@ fn run_with_tentacle_io(
             keys,
         )?;
         if keys.full_restart {
+            monster.reset();
             // Estados no automaticos de la nueva partida por sus APIs existentes: la composicion se
             // cancela y la persecucion se reenlaza como al arrancar (bind + paso 0).
             if let Some(debug) = &mut capture {
@@ -2625,13 +2643,19 @@ fn run_with_tentacle_io(
         {
             // GT3: el MISMO cuadro compartido que las pruebas (preflight, teclas solares filtradas, fisica con
             // la entrada efectiva, captura automatica). `?` solo con entradas invalidas: nada cambio.
+            let ship_input = if monster_mode {
+                let phase = a.status().phase;
+                monster.before_frame(&mut world, io.ship_input(), phase)
+            } else {
+                io.ship_input()
+            };
             let out = advance_auto_capture_frame(
                 &mut world,
                 game,
                 o2,
                 a,
                 AutoControls {
-                    ship: io.ship_input(),
+                    ship: ship_input,
                     oxygen: oxygen_keys,
                     solar: auto_solar,
                     emergency: keys.emergency,
@@ -2655,6 +2679,9 @@ fn run_with_tentacle_io(
                     eprintln!("Captura automatica: cuadro rechazado: {error}");
                     capture_note = format!(" | cuadro rechazado: {error}");
                 }
+            }
+            if monster_mode && monster.after_frame(&mut world, a.status().phase, elapsed) {
+                println!("La Vigilia: el monstruo te arrastro y te mato (fin de la partida)");
             }
             if out.aborted {
                 eprintln!("Captura automatica ABORTADA (nave libre, sin tentaculo)");

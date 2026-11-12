@@ -9,6 +9,7 @@ pub mod creature_viewer;
 pub mod ending;
 pub mod lucid_game;
 pub mod markers;
+pub mod monster_death;
 pub mod lucid_perception_variant;
 pub mod perception_game;
 pub mod planet_props;

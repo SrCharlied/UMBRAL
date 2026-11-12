@@ -59,6 +59,8 @@ pub const BOOST_FOV: f64 = 75.0 * std::f64::consts::PI / 180.0;
 pub const SPACE_COLOR: u32 = 0x03040a;
 /// Distancia maxima de dibujo de planetas errantes y tanques de los sectores.
 pub const SECTOR_DRAW_DISTANCE: f64 = 2400.0;
+/// Duracion del aviso «+N% O2» tras recoger un tanque.
+pub const PICKUP_FLASH_SECONDS: f64 = 2.0;
 /// El OBJ de la nave apunta a +Z o -Z segun Blender; este giro lo alinea con -Z (D11).
 pub const SHIP_MODEL_YAW: f64 = std::f64::consts::PI;
 
@@ -128,6 +130,12 @@ pub struct World {
     pub sectors: Option<SectorField>,
     /// Teclas de O2 de la percepcion (1-4, M/N) arrastran tambien el O2 REAL (presentacion).
     pub oxygen_keys_drive_real: bool,
+    /// Segundos que le quedan al aviso de recogida de O2 (HUD de la presentacion).
+    pub pickup_flash: f64,
+    /// O2 que sumo la ultima recogida (fraccion), para el aviso.
+    pub last_pickup_gain: f64,
+    /// Secuencia de muerte por el monstruo en curso (`visual::monster_death`): el HUD muestra 0 %.
+    pub dying: bool,
     /// Modelo del tanque de oxigeno (coleccionables con `sectors`).
     tank_model: Model,
 }
@@ -243,6 +251,9 @@ impl World {
             solar_preview: None,
             sectors: None,
             oxygen_keys_drive_real: false,
+            pickup_flash: 0.0,
+            last_pickup_gain: 0.0,
+            dying: false,
             tank_model: oxygen_tank_mesh(),
         };
         world.snap_camera();
@@ -291,6 +302,9 @@ impl World {
         if let Some(field) = self.sectors.as_mut() {
             field.reset_collected();
         }
+        self.pickup_flash = 0.0;
+        self.last_pickup_gain = 0.0;
+        self.dying = false;
         self.time = 0.0;
         self.orbit_assist = false;
         self.forced_oxygen = None;
@@ -452,6 +466,9 @@ impl World {
             return;
         }
         let previous = self.ship.position;
+        let (picked_before, oxygen_before) =
+            (self.gameplay.collected_resources, self.gameplay.oxygen01);
+        self.pickup_flash = (self.pickup_flash - dt).max(0.0);
         self.ship.update(input, dt);
         self.gameplay
             .navigation
@@ -480,6 +497,10 @@ impl World {
             self.time,
         );
         self.update_sectors(previous);
+        if self.gameplay.collected_resources > picked_before {
+            self.pickup_flash = PICKUP_FLASH_SECONDS;
+            self.last_pickup_gain = (self.gameplay.oxygen01 - oxygen_before).max(0.0);
+        }
         if !self.visual_transition_owned {
             self.debug_oxygen01 = self.forced_oxygen.unwrap_or(self.gameplay.oxygen01);
             self.mirrored_oxygen = self.debug_oxygen01;

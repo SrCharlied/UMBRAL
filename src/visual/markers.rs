@@ -101,3 +101,103 @@ fn diamond(fb: &mut Framebuffer, cx: isize, cy: isize, r: isize, color: u32) {
         }
     }
 }
+
+/// Indicador de oxigeno de la presentacion, arriba al centro: porcentaje del O2 REAL con barra
+/// (cian sobre 50 %, ambar entre 25 y 50, rojo debajo, parpadeo bajo 15 %), registros y tanques
+/// recogidos, y el aviso de la ultima recogida.
+pub fn draw_oxygen_hud(fb: &mut Framebuffer, world: &World) {
+    if world.gameplay.game_over || world.gameplay.objective_complete {
+        return;
+    }
+    let (w, h) = (fb.width, fb.height);
+    if w < 160 || h < 90 {
+        return;
+    }
+    let big = w >= 960;
+    let scale = if big { 3 } else { 2 };
+    let small = if big { 2 } else { 1 };
+    let o2 = if world.dying {
+        0.0
+    } else {
+        world.gameplay.oxygen01.clamp(0.0, 1.0)
+    };
+    let percent = (o2 * 100.0).round() as u32;
+    let color = if o2 > 0.5 {
+        TANK_COLOR
+    } else if o2 > 0.25 {
+        0xffb02e
+    } else {
+        0xff4a3d
+    };
+    let blink = o2 < 0.15 && (world.time * 3.0).fract() < 0.4;
+    // Panel.
+    let panel_w = (w / 3).max(220).min(w - 16);
+    let panel_x = (w - panel_w) / 2;
+    let row = 8 * small + 4;
+    let panel_h = 7 * scale + 14 + row * 2;
+    fb.darken_rect(panel_x, 6, panel_w, panel_h, 0.55);
+    // Texto principal.
+    let label = format!("O2 {percent}%");
+    let text_w = label.len() * 6 * scale;
+    let y = 12;
+    if !blink {
+        draw_text(fb, w.saturating_sub(text_w) / 2, y, scale, color, &label);
+    }
+    // Barra.
+    let bar_y = y + 7 * scale + 4;
+    let bar_x = panel_x + 10;
+    let bar_w = panel_w - 20;
+    let filled = (bar_w as f64 * o2).round() as usize;
+    for by in bar_y..bar_y + 4 {
+        for bx in bar_x..bar_x + bar_w {
+            let c = if bx < bar_x + filled { color } else { 0x1c2430 };
+            fb.put_pixel(bx, by, c);
+        }
+    }
+    // Contadores.
+    let info = format!(
+        "REGISTROS {}/3   TANQUES {}",
+        world.gameplay.collected_logs, world.gameplay.collected_resources
+    );
+    let info_w = info.len() * 6 * small;
+    draw_text(
+        fb,
+        w.saturating_sub(info_w) / 2,
+        bar_y + 9,
+        small,
+        0xc9d6e0,
+        &info,
+    );
+    // Secuencia de muerte: el monstruo jala la nave.
+    if world.dying && (world.time * 2.0).fract() < 0.75 {
+        let msg = "SIN OXIGENO - ALGO TE ARRASTRA";
+        let msg_w = msg.len() * 6 * small;
+        draw_text(
+            fb,
+            w.saturating_sub(msg_w) / 2,
+            6 + panel_h + 8,
+            small,
+            0xff4a3d,
+            msg,
+        );
+        return;
+    }
+    // Aviso de recogida.
+    if world.pickup_flash > 0.0 {
+        let gain = (world.last_pickup_gain * 100.0).round();
+        let msg = if gain >= 1.0 {
+            format!("+{gain:.0}% O2")
+        } else {
+            "O2 AL 100%".to_string()
+        };
+        let msg_w = msg.len() * 6 * scale;
+        draw_text(
+            fb,
+            w.saturating_sub(msg_w) / 2,
+            6 + panel_h + 8,
+            scale,
+            TANK_COLOR,
+            &msg,
+        );
+    }
+}

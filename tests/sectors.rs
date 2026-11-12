@@ -262,3 +262,68 @@ fn los_planetas_errantes_se_dibujan_y_cuentan_como_objetos() {
     assert!(with.objects_submitted > without.objects_submitted);
     assert!(with.fragments_evaluated > without.fragments_evaluated);
 }
+
+#[test]
+fn tras_bajar_con_teclas_el_oxigeno_recuperado_quita_los_ojos() {
+    use umbral::visual::watching_stars_game::apply_watching_stars;
+    let mut w = presentation_world();
+    let mut oxygen = OxygenTransition::new(w.debug_oxygen01).unwrap();
+    let mut fb = Framebuffer::new(640, 360, SPACE_COLOR).unwrap();
+    let step = |w: &mut World, oxygen: &mut OxygenTransition, keys: OxygenKeys| {
+        advance_perception_frame(w, oxygen, keys, &ShipInput::default(), 0.1).unwrap();
+    };
+    // Tecla 4 (5 %): baja el O2 real y el mostrado hasta el objetivo.
+    step(
+        &mut w,
+        &mut oxygen,
+        OxygenKeys {
+            preset: Some(0.05),
+            ..OxygenKeys::default()
+        },
+    );
+    for _ in 0..60 {
+        step(&mut w, &mut oxygen, OxygenKeys::default());
+    }
+    assert!(
+        w.forced_oxygen.is_none(),
+        "al llegar al objetivo el forzado se suelta"
+    );
+    assert!(w.gameplay.oxygen01 < 0.06 && w.debug_oxygen01 < 0.06);
+    w.render(&mut fb);
+    assert!(!apply_watching_stars(&mut fb, &w).unwrap().eyes.is_empty());
+    // Tanques: el O2 real vuelve a 100 % y el mostrado lo sigue; los ojos desaparecen.
+    w.gameplay.oxygen01 = 1.0;
+    for _ in 0..60 {
+        step(&mut w, &mut oxygen, OxygenKeys::default());
+    }
+    assert!(w.debug_oxygen01 > 0.97, "mostrado {}", w.debug_oxygen01);
+    w.render(&mut fb);
+    let report = apply_watching_stars(&mut fb, &w).unwrap();
+    assert!(report.active_ids.is_empty() && report.eyes.is_empty());
+}
+
+#[test]
+fn el_hud_muestra_el_oxigeno_y_el_aviso_de_recogida() {
+    use umbral::visual::markers::draw_oxygen_hud;
+    let mut w = presentation_world();
+    let mut fb = Framebuffer::new(1280, 720, SPACE_COLOR).unwrap();
+    w.render(&mut fb);
+    let before = fb.pixels.clone();
+    draw_oxygen_hud(&mut fb, &w);
+    let top: Vec<u32> = fb.pixels[..1280 * 60].to_vec();
+    assert!(top.contains(&0x3ff5df), "O2 alto en cian");
+    assert_ne!(before, fb.pixels);
+    // Recoger: aviso visible bajo el panel.
+    w.pickup_flash = 1.0;
+    w.last_pickup_gain = 0.25;
+    w.render(&mut fb);
+    draw_oxygen_hud(&mut fb, &w);
+    let flash: Vec<u32> = fb.pixels[1280 * 60..1280 * 110].to_vec();
+    assert!(flash.contains(&0x3ff5df), "aviso +25% O2");
+    // O2 bajo: rojo.
+    w.gameplay.oxygen01 = 0.2;
+    w.pickup_flash = 0.0;
+    w.render(&mut fb);
+    draw_oxygen_hud(&mut fb, &w);
+    assert!(fb.pixels[..1280 * 60].contains(&0xff4a3d));
+}
