@@ -25,6 +25,9 @@ use umbral::{
         creature_reveal::{parse_debug_oxygen, validate_reveal_flags},
         creature_viewer::validate_output_path,
         lucid_game::{LucidSurfaceRequest, validate_lucid_surface_flags},
+        oxygen_hud::{
+            OxygenHudOptions, oxygen_hud_for_game, parse_oxygen_reserve, validate_oxygen_hud_flags,
+        },
         perception_game::validate_lucid_perception_flags,
         solar_game::{SolarRevealRequest, validate_solar_reveal_flags},
         staged_creature_reveal::validate_staged_flags,
@@ -94,6 +97,7 @@ fn run() -> Result<(), String> {
     let (mut legacy, mut time, mut near, mut culling) = (false, 0.0, None, true);
     let (mut lod, mut overlay) = (true, false);
     let mut gameplay_feedback = false;
+    let mut oxygen_hud = OxygenHudOptions::default();
     let (mut creature_model, mut creature_texture, mut near_creature) = (None, None, false);
     let (mut creature_reveal, mut debug_oxygen) = (false, None);
     let (mut creature_reveal_stages, mut creature_eye_follow) = (false, false);
@@ -122,6 +126,14 @@ fn run() -> Result<(), String> {
             "--no-lod" => lod = false,
             "--overlay" => overlay = true,
             "--gameplay-feedback" => gameplay_feedback = true,
+            "--oxygen-hud" => oxygen_hud.enabled = true,
+            "--oxygen-reserve" => {
+                oxygen_hud.initial_reserve = Some(parse_oxygen_reserve(
+                    &args
+                        .next()
+                        .ok_or("Falta el valor despues de --oxygen-reserve")?,
+                )?)
+            }
             "--time" => {
                 time = args
                     .next()
@@ -225,7 +237,7 @@ Estrellas observadoras (aprobadas 02, opt-in): --watching-stars: implica --lucid
 Composicion OBSERVADORA del tentaculo (debug, opt-in; NO es captura ni agarre): --tentacle-capture-debug (requiere --creature-solar-reveal) --tentacle-capture-package <capture_v2> --tentacle-growth-package <growth_package.txt> --tentacle-arm-correspondence <arm_correspondence.txt> [--tentacle-capture-time S: activa al arrancar con reloj S, replay determinista]. F7 toma la POSICION de la nave y el transform actual de la criatura y reproduce el brazo aprobado en la capa del cuerpo (misma alfa: con O2 >= 50 % sigue invisible); otra F7 cancela. No mueve nave, camara, input ni O2
 PERSECUCION VIVA del tentaculo (prototipo opt-in; NO es captura ni agarre): --tentacle-live-pursuit (requiere --creature-solar-reveal) con los mismos --tentacle-capture-package, --tentacle-growth-package y --tentacle-arm-correspondence. Con O2 <= 15 % la punta persigue la POSICION ACTUAL de la nave con rapidez limitada (15 % lenta, 10 % mas rapida, 5 % y 0 % rapida; valores candidatos) y raiz fija al cuerpo; con O2 > 15 % vuelve al reposo. Misma capa y alfa del cuerpo. No se combina con --tentacle-capture-debug ni --tentacle-capture-time. No mueve nave, camara, input ni O2; sin muerte, agarre ni arrastre
 PERSECUCION ESPACIAL 3D del tentaculo (prototipo opt-in; NO es captura ni agarre): --tentacle-spatial-pursuit (requiere --creature-solar-reveal) con los mismos --tentacle-capture-package, --tentacle-growth-package y --tentacle-arm-correspondence. Mismo controlador y O2 que la persecucion viva; deformacion 3D continua (codo espacial con memoria de lado) tambien por detras de la criatura; bola minima mayor (dominio exacto declarado). No se combina con --tentacle-live-pursuit, --tentacle-capture-debug ni --tentacle-capture-time. No mueve nave, camara, input ni O2; sin muerte, agarre ni arrastre
-CAPTURA AUTOMATICA por contacto (GT3, opt-in): --tentacle-auto-capture (requiere --creature-solar-reveal y --lucid-perception o --watching-stars) con los mismos --tentacle-capture-package, --tentacle-growth-package y --tentacle-arm-correspondence. Persecucion espacial existente con O2 <= 15 %; si la punta ALCANZA la nave, la nave queda atrapada en ese cuadro donde esta (sin T ni quietud): vuelo y R/7/8 bloqueados, gesto aprobado B1/P1, arrastre y retencion aprobados; O2 > 15 % la suelta sin inercia; X es un escape de diagnostico. No se combina con las otras rutas del tentaculo. [--auto-capture-replay <carpeta VACIA>: replay determinista del mismo bucle sin ventana, PNG y metrics.json]"
+CAPTURA AUTOMATICA por contacto (GT3, opt-in): --tentacle-auto-capture (requiere --creature-solar-reveal y --lucid-perception o --watching-stars) con los mismos --tentacle-capture-package, --tentacle-growth-package y --tentacle-arm-correspondence. Persecucion espacial existente con O2 <= 15 %; si la punta ALCANZA la nave, la nave queda atrapada en ese cuadro donde esta (sin T ni quietud): vuelo y R/7/8 bloqueados, gesto aprobado B1/P1, arrastre y retencion aprobados; O2 > 15 % la suelta sin inercia; X es un escape de diagnostico. No se combina con las otras rutas del tentaculo. [--auto-capture-replay <carpeta VACIA>: replay determinista del mismo bucle sin ventana, PNG y metrics.json]\nHUD DE OXIGENO: instrumento oscuro hundido en el borde superior; su arco y la lectura O2 xx% muestran la RESERVA REAL del juego y se vacian de derecha a izquierda conforme baja (consumo del tanque y, en la experiencia por defecto, N/M y 1-4; --debug-oxygen solo cambia el O2 VISUAL). Encendido por defecto en la ventana; con --classic o --headless se pide con --oxygen-hud. Va despues de la percepcion: sigue legible con O2 bajo; los marcadores y el final van encima. Debajo queda un hueco reservado (sin dibujar). No con --legacy. [--oxygen-reserve X: reserva REAL inicial en [0, 1]; con el HUD encendido; no con --debug-oxygen; Shift+R vuelve a la reserva llena]"
                 );
                 return Ok(());
             }
@@ -283,6 +295,10 @@ CAPTURA AUTOMATICA por contacto (GT3, opt-in): --tentacle-auto-capture (requiere
             auto_capture = true;
         }
     }
+    // HUD de oxigeno: encendido con la experiencia completa o con `--oxygen-hud`; sus combinaciones antes de
+    // cualquier archivo.
+    let oxygen_hud = oxygen_hud_for_game(oxygen_hud, default_effects);
+    validate_oxygen_hud_flags(oxygen_hud, legacy, debug_oxygen.is_some())?;
     // Composicion observadora del tentaculo (opt-in): sus combinaciones antes de cualquier archivo.
     capture_flags.solar = creature_solar_reveal;
     capture_flags.legacy = legacy;
@@ -439,6 +455,7 @@ CAPTURA AUTOMATICA por contacto (GT3, opt-in): --tentacle-auto-capture (requiere
             } else {
                 umbral::app::OxygenSource::Real
             },
+            oxygen_hud,
         };
         let route = PerceptionRoute {
             lucid: lucid_surface,

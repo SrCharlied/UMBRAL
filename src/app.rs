@@ -33,6 +33,7 @@ use crate::{
         },
         lucid_game::set_lucid_surface,
         monster_death::MonsterDeath,
+        oxygen_hud::{OxygenHudOptions, OxygenReading, draw_oxygen_hud, validate_oxygen_hud_flags},
         perception_game::{
             OXYGEN_TRANSITION_RATE, OxygenKeys, OxygenTransition, apply_lucid_perception,
             perception_title, ship_focus,
@@ -104,6 +105,8 @@ pub struct ConfiguredGameOptions {
     /// Experiencia de presentacion (por defecto en ventana): espacio procedural por sectores con
     /// tanques visibles y marcadores, y teclas de O2 que arrastran el O2 real.
     pub presentation: bool,
+    /// HUD de RESERVA de oxigeno: encendido con la experiencia completa (ventana) o con `--oxygen-hud`.
+    pub oxygen_hud: OxygenHudOptions,
 }
 
 /// Ritmos de consumo que alterna la tecla `L`: segundos para vaciar el tanque completo.
@@ -157,6 +160,7 @@ impl From<GameOptions> for ConfiguredGameOptions {
             oxygen_source: OxygenSource::Legacy,
             oxygen_seconds: None,
             presentation: false,
+            oxygen_hud: OxygenHudOptions::default(),
         }
     }
 }
@@ -508,6 +512,23 @@ pub fn compose_presentation(
     world: &World,
     layers: &PresentationLayers<'_>,
 ) -> Result<(), String> {
+    compose_presentation_with_hud(framebuffer, world, layers, false)
+}
+
+/// `compose_presentation` con el HUD de RESERVA de oxigeno (encendido por defecto en la experiencia completa,
+/// `--oxygen-hud` en las demas): el instrumento va DESPUES de la percepcion para seguir legible con O2 bajo
+/// (decision de Charlie), debajo de los marcadores de navegacion y de la presentacion final. La reserva
+/// (`world.gameplay.oxygen01`) se valida ANTES de tocar el cuadro: con un valor invalido nada se dibuja.
+/// Con `oxygen_hud = false` es exactamente `compose_presentation`.
+pub fn compose_presentation_with_hud(
+    framebuffer: &mut Framebuffer,
+    world: &World,
+    layers: &PresentationLayers<'_>,
+    oxygen_hud: bool,
+) -> Result<(), String> {
+    let reading = oxygen_hud
+        .then(|| OxygenReading::real_reserve(world))
+        .transpose()?;
     if let Some(lines) = layers.overlay {
         draw_overlay(framebuffer, lines);
     }
@@ -526,11 +547,14 @@ pub fn compose_presentation(
     if layers.perception {
         apply_lucid_perception(framebuffer, world)?;
     }
-    // Marcadores de navegacion (solo con el espacio procedural de la presentacion): despues de la
-    // percepcion para que sigan visibles con O2 bajo, antes del final.
+    if let Some(reading) = reading {
+        draw_oxygen_hud(framebuffer, reading);
+    }
+    // Marcadores de navegacion y notas de la presentacion (solo con el espacio procedural): despues de la
+    // percepcion para que sigan visibles con O2 bajo, antes del final. El O2 lo lee SOLO el HUD de arriba.
     if world.sectors.is_some() {
         crate::visual::markers::draw_markers(framebuffer, world);
-        crate::visual::markers::draw_oxygen_hud(framebuffer, world);
+        crate::visual::markers::draw_hud_notes(framebuffer, world);
     }
     if let Some(seconds) = layers.ending
         && let Some(summary) = EndingSummary::from_gameplay(&world.gameplay, world.time)
@@ -581,6 +605,7 @@ fn describe(stats: &RenderStats) -> String {
 /// Juego normal: sin la comparacion de la mirada.
 pub fn run_game(options: impl Into<ConfiguredGameOptions>) -> Result<(), String> {
     let options: ConfiguredGameOptions = options.into();
+    validate_configured_hud(&options)?;
     run(options, Route::default())
 }
 
@@ -641,6 +666,7 @@ fn run_with_perception(
     watching: bool,
 ) -> Result<(), String> {
     let options: ConfiguredGameOptions = options.into();
+    validate_configured_hud(&options)?;
     validate_command_line_values(&options)?;
     if route.solar {
         validate_solar_options(&options)?;
@@ -669,6 +695,7 @@ pub fn run_game_with_lucid_surface(
     options: impl Into<ConfiguredGameOptions>,
 ) -> Result<(), String> {
     let options: ConfiguredGameOptions = options.into();
+    validate_configured_hud(&options)?;
     validate_command_line_values(&options)?;
     validate_normal_options(&options)?;
     run(
@@ -708,6 +735,17 @@ fn validate_normal_options(options: &GameOptions) -> Result<(), String> {
     Ok(())
 }
 
+/// HUD-01: opciones del HUD de oxigeno de `ConfiguredGameOptions` (que `GameOptions` no ve por `Deref`), sin
+/// tocar archivos. Cada entrada publica lo llama al empezar, ANTES de su primer IO (rutas de entrada/salida, replay
+/// o carga), y el nucleo lo repite como defensa. La reserva inicial solo con el O2 real (sin `--debug-oxygen`).
+fn validate_configured_hud(options: &ConfiguredGameOptions) -> Result<(), String> {
+    validate_oxygen_hud_flags(
+        options.oxygen_hud,
+        false,
+        !matches!(options.oxygen_source, OxygenSource::Real),
+    )
+}
+
 /// Tamano, tiempo y O2 con el contrato de la linea de comandos (`--width`/`--height` positivos
 /// y dentro del maximo del framebuffer, `--time` finito >= 0, `--debug-oxygen` en `[0, 1]`).
 fn validate_command_line_values(options: &GameOptions) -> Result<(), String> {
@@ -741,6 +779,7 @@ pub fn run_game_with_eye_comparison(
     options: impl Into<ConfiguredGameOptions>,
 ) -> Result<(), String> {
     let options: ConfiguredGameOptions = options.into();
+    validate_configured_hud(&options)?;
     validate_comparison_options(&options)?;
     run(
         options,
@@ -757,6 +796,7 @@ pub fn run_game_with_eye_comparison(
 /// cualquier IO con los mismos guards que la comparacion.
 pub fn run_game_with_distant_turn(options: impl Into<ConfiguredGameOptions>) -> Result<(), String> {
     let options: ConfiguredGameOptions = options.into();
+    validate_configured_hud(&options)?;
     validate_comparison_options(&options)?;
     run(
         options,
@@ -777,6 +817,7 @@ pub fn run_game_with_horizontal_follow(
     options: impl Into<ConfiguredGameOptions>,
 ) -> Result<(), String> {
     let options: ConfiguredGameOptions = options.into();
+    validate_configured_hud(&options)?;
     validate_comparison_options(&options)?;
     run(
         options,
@@ -795,6 +836,7 @@ pub fn run_game_with_horizontal_follow(
 /// `--near`, y alias de `--output`. Sin panel por defecto: el estado va en el titulo.
 pub fn run_game_with_solar_reveal(options: impl Into<ConfiguredGameOptions>) -> Result<(), String> {
     let options: ConfiguredGameOptions = options.into();
+    validate_configured_hud(&options)?;
     validate_solar_options(&options)?;
     run(
         options,
@@ -812,6 +854,7 @@ pub fn run_game_with_solar_and_lucid_surface(
     options: impl Into<ConfiguredGameOptions>,
 ) -> Result<(), String> {
     let options: ConfiguredGameOptions = options.into();
+    validate_configured_hud(&options)?;
     validate_command_line_values(&options)?;
     validate_solar_options(&options)?;
     run(
@@ -835,6 +878,7 @@ pub fn run_game_with_void_eye(
     solar: bool,
 ) -> Result<(), String> {
     let options: ConfiguredGameOptions = options.into();
+    validate_configured_hud(&options)?;
     validate_command_line_values(&options)?;
     if solar {
         validate_solar_options(&options)?;
@@ -969,6 +1013,7 @@ pub fn run_game_with_tentacle_capture(
     capture: TentacleCaptureRequest,
 ) -> Result<(), String> {
     let options: ConfiguredGameOptions = options.into();
+    validate_configured_hud(&options)?;
     validate_command_line_values(&options)?;
     if !route.solar {
         return Err(
@@ -1013,6 +1058,7 @@ pub fn run_game_with_tentacle_live_pursuit(
     request: LivePursuitRequest,
 ) -> Result<(), String> {
     let options: ConfiguredGameOptions = options.into();
+    validate_configured_hud(&options)?;
     validate_command_line_values(&options)?;
     if !route.solar {
         return Err(
@@ -1055,6 +1101,7 @@ pub fn run_game_with_tentacle_spatial_pursuit(
     request: LivePursuitRequest,
 ) -> Result<(), String> {
     let options: ConfiguredGameOptions = options.into();
+    validate_configured_hud(&options)?;
     validate_command_line_values(&options)?;
     if !route.solar {
         return Err(
@@ -1099,6 +1146,7 @@ pub fn run_game_with_tentacle_auto_capture(
     replay: Option<PathBuf>,
 ) -> Result<(), String> {
     let options: ConfiguredGameOptions = options.into();
+    validate_configured_hud(&options)?;
     validate_command_line_values(&options)?;
     if !route.solar {
         return Err(
@@ -2065,6 +2113,9 @@ fn run_with_tentacle_io(
     replay: Option<PathBuf>,
 ) -> Result<(), String> {
     let options: ConfiguredGameOptions = options.into();
+    // HUD de oxigeno (preview): defensa central antes de cualquier archivo (las entradas publicas ya lo validan
+    // al empezar, antes de su propio IO de rutas: HUD-01).
+    validate_configured_hud(&options)?;
     let Route {
         comparison,
         distant_turn,
@@ -2103,6 +2154,18 @@ fn run_with_tentacle_io(
     if let Some(seconds) = options.oxygen_seconds {
         set_oxygen_tank_seconds(&mut world, seconds)?;
         println!("Oxigeno: el tanque completo dura {seconds:.0} s (L alterna 420/120/60/30 s)");
+    }
+    if let Some(reserve) = options.oxygen_hud.initial_reserve {
+        // Preview del HUD: RESERVA REAL inicial (no un override visual). El O2 visual la sigue como siempre
+        // y a partir de aqui el juego la gasta y recupera con sus reglas; Shift+R vuelve a la reserva llena.
+        world.gameplay.oxygen01 = reserve;
+        world.clear_debug_oxygen();
+    }
+    if options.oxygen_hud.enabled {
+        println!(
+            "HUD de oxigeno: instrumento superior con la RESERVA REAL {:.0}% (baja con el tanque; en la experiencia por defecto tambien con N/M y 1-4)",
+            world.gameplay.oxygen01 * 100.0
+        );
     }
     world.toggles.frustum_culling = options.culling;
     world.toggles.lod = options.lod;
@@ -2512,7 +2575,7 @@ fn run_with_tentacle_io(
                 world.time,
             )
         });
-        compose_presentation(
+        compose_presentation_with_hud(
             &mut framebuffer,
             &world,
             &PresentationLayers {
@@ -2525,6 +2588,7 @@ fn run_with_tentacle_io(
                 perception,
                 ending: ending_seconds,
             },
+            options.oxygen_hud.enabled,
         )?;
         if let Some(guard) = &output_guard {
             guard.preflight(&options.output)?;
@@ -2774,7 +2838,7 @@ fn run_with_tentacle_io(
                 world.time,
             )
         });
-        compose_presentation(
+        compose_presentation_with_hud(
             &mut framebuffer,
             &world,
             &PresentationLayers {
@@ -2787,6 +2851,7 @@ fn run_with_tentacle_io(
                 perception,
                 ending: ending_seconds,
             },
+            options.oxygen_hud.enabled,
         )?;
         if io.pressed(Key::P) {
             if let Some(guard) = &output_guard {

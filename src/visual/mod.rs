@@ -11,6 +11,7 @@ pub mod lucid_game;
 pub mod markers;
 pub mod monster_death;
 pub mod lucid_perception_variant;
+pub mod oxygen_hud;
 pub mod perception_game;
 pub mod planet_props;
 pub mod procedural_surface;

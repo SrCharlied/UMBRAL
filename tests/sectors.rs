@@ -304,26 +304,34 @@ fn tras_bajar_con_teclas_el_oxigeno_recuperado_quita_los_ojos() {
 
 #[test]
 fn el_hud_muestra_el_oxigeno_y_el_aviso_de_recogida() {
-    use umbral::visual::markers::draw_oxygen_hud;
+    // main_hud_01: el O2 lo lee SOLO el HUD de Persona 3 (`visual::oxygen_hud`, pruebas oxygen_hud*); las notas de
+    // la presentacion (contadores y aviso de recogida) van debajo del hueco reservado para el ojo.
+    use umbral::visual::{markers::draw_hud_notes, oxygen_hud::oxygen_hud_layout};
     let mut w = presentation_world();
     let mut fb = Framebuffer::new(1280, 720, SPACE_COLOR).unwrap();
+    let below = oxygen_hud_layout(1280, 720).unwrap().eye_reserve.y1 * 1280;
     w.render(&mut fb);
     let before = fb.pixels.clone();
-    draw_oxygen_hud(&mut fb, &w);
-    let top: Vec<u32> = fb.pixels[..1280 * 60].to_vec();
-    assert!(top.contains(&0x3ff5df), "O2 alto en cian");
+    draw_hud_notes(&mut fb, &w);
     assert_ne!(before, fb.pixels);
-    // Recoger: aviso visible bajo el panel.
+    assert_eq!(
+        before[..below],
+        fb.pixels[..below],
+        "nada sobre el HUD ni el hueco del ojo"
+    );
+    // Recoger: aviso visible bajo el HUD.
     w.pickup_flash = 1.0;
     w.last_pickup_gain = 0.25;
     w.render(&mut fb);
-    draw_oxygen_hud(&mut fb, &w);
-    let flash: Vec<u32> = fb.pixels[1280 * 60..1280 * 110].to_vec();
-    assert!(flash.contains(&0x3ff5df), "aviso +25% O2");
-    // O2 bajo: rojo.
+    draw_hud_notes(&mut fb, &w);
+    assert!(
+        fb.pixels[below..below + 1280 * 80].contains(&0x3ff5df),
+        "aviso +25% O2"
+    );
+    // O2 bajo: sin barra roja propia (la lectura es el HUD de oxigeno).
     w.gameplay.oxygen01 = 0.2;
     w.pickup_flash = 0.0;
     w.render(&mut fb);
-    draw_oxygen_hud(&mut fb, &w);
-    assert!(fb.pixels[..1280 * 60].contains(&0xff4a3d));
+    draw_hud_notes(&mut fb, &w);
+    assert!(!fb.pixels.contains(&0xff4a3d));
 }
