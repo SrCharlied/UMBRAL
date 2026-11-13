@@ -112,7 +112,7 @@ Al agotarse el oxígeno o al llegar al Sol con los tres registros, la partida se
 cargo run --release --locked -- --creature-model ruta/modelo.obj --creature-texture ruta/textura.png --creature-solar-reveal
 ```
 
-La criatura usa assets externos que no se incluyen en el repositorio. El flag activa las etapas, la mirada a la cámara y el seguimiento horizontal aprobados; no requiere repetir sus flags individuales. Empieza en la vista frontal con oxígeno al 100 %, el Sol normal y las órbitas vivas. La revelación se prueba con `M`/`N` o los presets `1`–`4`: al 50 % exacto el ojo aún está oculto; aparece al bajar de ese umbral. El Sol visual se desvanece entre 30 y 25 %, sin apagar la iluminación global ni eliminar el cuerpo celeste lógico.
+Los assets de la criatura están en [`assets/creature/`](assets/creature/README.md); ahí está también el comando completo con la captura automática. El flag activa las etapas, la mirada a la cámara y el seguimiento horizontal aprobados; no requiere repetir sus flags individuales. Empieza en la vista frontal con oxígeno al 100 %, el Sol normal y las órbitas vivas. La revelación se prueba con `M`/`N` o los presets `1`–`4`: al 50 % exacto el ojo aún está oculto; aparece al bajar de ese umbral. El Sol visual se desvanece entre 30 y 25 %, sin apagar la iluminación global ni eliminar el cuerpo celeste lógico.
 
 Sin el flag y sin assets externos se conserva el juego base. La composición está aceptada por Charlie; los detalles, restricciones, controles y pruebas están en [`docs/static-creature.md`](docs/static-creature.md#sol-con-ojo-en-el-juego-creature-solar-reveal). No se añade consumo automático de oxígeno ni colisiones.
 
@@ -286,6 +286,7 @@ Criatura texturizada dentro del juego: ruta estática, revelación por oxígeno,
 
 - Código base, pruebas y modelo: [`carga-modelos-24531`](https://github.com/SrCharlied/carga-modelos-24531), commit `51fbaed7d6c5db12a264ce91b86f450e7b05dd34`, autor SrCharlied según su historial. El historial Git de ese laboratorio no se importó; esta referencia sustituye a la atribución por historial.
 - Origen y hashes de la nave: `assets/models/ship/README.md`.
+- Criatura (modelo generado con Meshy AI) y paquetes del tentáculo: `assets/creature/README.md`.
 
 ## Contribuciones
 

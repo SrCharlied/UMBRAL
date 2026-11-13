@@ -9,3 +9,6 @@
 *.png binary
 *.jpg binary
 *.blend binary
+
+# Criatura y paquetes del tentaculo: byte a byte (los paquetes se verifican por hash).
+assets/creature/** -text
