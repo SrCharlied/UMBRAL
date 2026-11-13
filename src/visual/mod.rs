@@ -18,6 +18,7 @@ pub mod procedural_surface;
 pub mod solar_game;
 pub mod solar_reveal_preview;
 pub mod staged_creature_reveal;
+pub mod start_menu;
 pub mod static_creature;
 pub mod surface_placement;
 pub mod tentacle_auto_capture;

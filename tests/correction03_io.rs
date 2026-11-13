@@ -52,6 +52,7 @@ fn configured(output: PathBuf) -> ConfiguredGameOptions {
         oxygen_seconds: None,
         presentation: false,
         oxygen_hud: Default::default(),
+        start_menu: false,
     }
 }
 fn run(o: ConfiguredGameOptions, replay: Option<PathBuf>) -> Result<(), String> {

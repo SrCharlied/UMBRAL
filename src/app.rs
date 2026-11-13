@@ -46,6 +46,7 @@ use crate::{
         staged_creature_reveal::{
             CREATURE_EYE_REGION, StagedRevealSettings, validate_staged_flags,
         },
+        start_menu::{MenuAction, MenuInput, StartMenu, draw_start_menu},
         static_creature::{CreatureOptions, CreaturePlacement, StaticCreature},
         tentacle_auto_capture::{
             AutoCapture, AutoControls, AutoEvent, AutoFrame, advance_auto_capture_frame,
@@ -108,6 +109,8 @@ pub struct ConfiguredGameOptions {
     pub presentation: bool,
     /// HUD de RESERVA de oxigeno: encendido con la experiencia completa (ventana) o con `--oxygen-hud`.
     pub oxygen_hud: OxygenHudOptions,
+    /// Menu de inicio (`visual::start_menu`) antes de la partida: experiencia completa en ventana sin `--no-menu`.
+    pub start_menu: bool,
 }
 
 /// Ritmos de consumo que alterna la tecla `L`: segundos para vaciar el tanque completo.
@@ -165,6 +168,7 @@ impl From<GameOptions> for ConfiguredGameOptions {
             oxygen_seconds: None,
             presentation: false,
             oxygen_hud: OxygenHudOptions::default(),
+            start_menu: false,
         }
     }
 }
@@ -2616,6 +2620,59 @@ fn run_with_tentacle_io(
         }
         (None, _) => Box::new(WindowIo::new(width, height)?),
     };
+    // Menu de inicio (al estilo de DREDGE): la escena real del arranque, sin avanzar la partida (ni O2 ni reloj), con
+    // el titulo y los botones encima. Solo en ventana; con `--frames N` tambien cuenta sus cuadros.
+    if options.start_menu && replay.is_none() {
+        let mut menu = StartMenu::new();
+        let mut menu_frames = 0usize;
+        io.set_title("UMBRAL");
+        loop {
+            if !io.is_open() {
+                println!("{}", io.summary(menu_frames));
+                return Ok(());
+            }
+            let elapsed = io.elapsed();
+            let action = menu.step(MenuInput {
+                up: io.pressed(Key::Up) || io.pressed(Key::W),
+                down: io.pressed(Key::Down) || io.pressed(Key::S),
+                confirm: io.pressed(Key::Enter)
+                    || io.pressed(Key::NumPadEnter)
+                    || io.pressed(Key::Space),
+                back: io.pressed(Key::Escape),
+            });
+            match action {
+                MenuAction::StartGame => {
+                    println!("Menu: NUEVA PARTIDA");
+                    break;
+                }
+                MenuAction::Quit => {
+                    println!("Menu: SALIR");
+                    println!("{}", io.summary(menu_frames));
+                    return Ok(());
+                }
+                MenuAction::Stay => {}
+            }
+            let stats = render(&world, &mut framebuffer, solar_game.as_ref(), None)?.stats;
+            draw_start_menu(&mut framebuffer, &menu);
+            io.present(&LoopFrame {
+                framebuffer: &framebuffer,
+                world: &world,
+                stats: &stats,
+                elapsed,
+                auto: None,
+                auto_frame: None,
+                contact_error_obj: None,
+            })?;
+            menu_frames += 1;
+            if options
+                .frame_limit
+                .is_some_and(|limit| menu_frames >= limit)
+            {
+                println!("{}", io.summary(menu_frames));
+                return Ok(());
+            }
+        }
+    }
     let mut fps = 60.0;
     let (mut frames, mut title_clock, mut title_frames) = (0usize, 0.0, 0u32);
     let mut ending_clock = EndingClock::new();

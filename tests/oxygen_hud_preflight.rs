@@ -75,6 +75,7 @@ fn options(dir: &Path, hud_enabled: bool, comparison: bool) -> ConfiguredGameOpt
             enabled: hud_enabled,
             initial_reserve: Some(0.5),
         },
+        start_menu: false,
     }
 }
 
