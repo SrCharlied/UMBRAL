@@ -25,6 +25,8 @@ pub const FULLY_SHOWN: f64 = 60.0;
 pub enum EndingKind {
     Death,
     Victory,
+    /// Victoria de la experiencia por defecto: los tres registros leidos (`GameplaySettings::win_on_logs`).
+    Secret,
 }
 
 impl EndingKind {
@@ -32,6 +34,8 @@ impl EndingKind {
     pub fn of(gameplay: &GameplayState) -> Option<Self> {
         if gameplay.game_over {
             Some(Self::Death)
+        } else if gameplay.objective_complete && gameplay.settings.win_on_logs {
+            Some(Self::Secret)
         } else if gameplay.objective_complete {
             Some(Self::Victory)
         } else {
@@ -123,6 +127,19 @@ pub fn ending_text(summary: &EndingSummary) -> (String, Vec<String>, String) {
                 "Y por fin pudiste verlo.".to_string(),
             ],
         ),
+        EndingKind::Secret => (
+            "EL SECRETO",
+            vec![
+                "Leiste los tres registros antes de que se acabara el aire.".to_string(),
+                "La antena, el osario y la vigilia contaban la misma historia: la tuya."
+                    .to_string(),
+                format!(
+                    "Te quedaba {:.0}% de oxigeno. Has evitado caer en la locura.",
+                    summary.oxygen01 * 100.0
+                ),
+                "El Sol cierra el ojo. Por ahora, el vacio vuelve a esconderse.".to_string(),
+            ],
+        ),
         EndingKind::Victory => (
             "EL UMBRAL",
             vec![
@@ -193,7 +210,7 @@ fn apply_transition(fb: &mut Framebuffer, kind: EndingKind, seconds: f64) {
                 }
             }
         }
-        EndingKind::Victory => {
+        EndingKind::Victory | EndingKind::Secret => {
             // Destello blanco calido y despues un fondo ambar con el resplandor del Sol al centro.
             let flash =
                 smoothstep(0.0, 0.7, seconds) * (1.0 - smoothstep(0.9, FADE_SECONDS, seconds));
@@ -268,7 +285,7 @@ pub fn draw_ending(fb: &mut Framebuffer, summary: &EndingSummary, seconds: f64) 
         .collect();
     let (title_color, body_color, accent) = match summary.kind {
         EndingKind::Death => (0xd8444a, 0xc9c2c4, 0x8a7f86),
-        EndingKind::Victory => (0xffe2a6, 0xf6ead2, 0xd8b779),
+        EndingKind::Victory | EndingKind::Secret => (0xffe2a6, 0xf6ead2, 0xd8b779),
     };
     // Revelado tipo maquina de escribir: titulo, cuerpo y estadisticas en orden.
     let mut budget = ((seconds - TEXT_DELAY) * CHARS_PER_SECOND) as usize;

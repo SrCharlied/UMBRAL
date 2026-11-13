@@ -2192,6 +2192,8 @@ fn run_with_tentacle_io(
         world.enable_sectors();
         world.oxygen_keys_drive_real = true;
         world.gameplay.settings.pickup_recovery = PRESENTATION_TANK_RECOVERY;
+        // Se gana al leer el tercer registro (final «EL SECRETO»), sin ir al Sol donde vive el monstruo.
+        world.gameplay.settings.win_on_logs = true;
         println!(
             "Presentacion: espacio procedural por sectores, tanques de O2 visibles y marcadores; N/M y 1-4 arrastran el O2 real"
         );

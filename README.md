@@ -41,6 +41,7 @@ cargo run --release --locked
 - Superficie lúcida en Antena y ojo del vacío en Vigilia.
 - Props y presentación final.
 - **El monstruo «La Vigilia»** (`assets/creature`): vive en el centro del Sol y se revela con el O₂. **Cuando el O₂ real llega a 0 es la animación de muerte** (`visual::monster_death`): el monstruo toma el control y jala la nave hacia él, el tentáculo la atrapa y la arrastra (captura automática aprobada, sin cambios) y, a los 1.5 s de quedar retenida, llega la muerte con la pantalla final. Durante la secuencia el HUD muestra O₂ 0 % y «SIN OXIGENO - ALGO TE ARRASTRA»; si la captura no llegara en 25 s, la muerte llega igual. Se activa solo si `assets/creature` está completo y no se usan `--near`, `--near-creature` ni otras opciones de criatura.
+- **Victoria al leer los tres registros**: en esta experiencia la partida se gana en cuanto recoges el tercer registro dorado, sin ir al Sol, con el final «EL SECRETO» («Has evitado caer en la locura»). `--classic` conserva la regla de siempre (tres registros y llegar al Sol).
 - Tanque de oxígeno de **120 s**: los ojos aparecen hacia los 42 s, la percepción empieza a los 60 s y la muerte llega a los 120 s. `L` cambia el ritmo.
 - **Espacio procedural por sectores** (`scene::sectors`): fuera del sistema solar (a más de 800 unidades del Sol) aparecen planetas errantes con props y tanques de oxígeno, generados por celdas de 700 unidades conforme avanzas. Son deterministas (al volver encuentras los mismos) y tienen colisión. En esta experiencia **cada tanque da +25 % de O₂** (`PRESENTATION_TANK_RECOVERY`; el juego clásico da +15 %).
 - **Tanques de oxígeno modelados** (cian, con pulso) en lugar de las esferas pequeñas, y **marcadores en pantalla**: rombo cian «O2 distancia» para los 3 tanques más cercanos y rombo dorado «REG distancia» para los registros que faltan. Fuera de vista se pegan al borde.
@@ -299,7 +300,7 @@ Criatura texturizada dentro del juego: ruta estática, revelación por oxígeno,
 
 ## Gameplay de Persona 2
 
-La reserva real dura 420 segundos sin cápsulas; cada cápsula turquesa recupera 15 %. Los tres registros dorados pueden recogerse en cualquier orden; después hay que acercarse al Sol para completar el objetivo. La recolección es automática por proximidad o cruce del trayecto. El texto de feedback usa la fuente existente del equipo y no reemplaza su HUD artístico. La gravedad se activa modificando `gameplay.navigation.settings.gravity_strength`; su valor predeterminado es cero.
+La reserva real dura 420 segundos sin cápsulas; cada cápsula turquesa recupera 15 %. Los tres registros dorados pueden recogerse en cualquier orden; después hay que acercarse al Sol para completar el objetivo (con `--classic`; en la experiencia por defecto se gana al recoger el tercero). La recolección es automática por proximidad o cruce del trayecto. El texto de feedback usa la fuente existente del equipo y no reemplaza su HUD artístico. La gravedad se activa modificando `gameplay.navigation.settings.gravity_strength`; su valor predeterminado es cero.
 
 ## Uso de asistencia de IA
 

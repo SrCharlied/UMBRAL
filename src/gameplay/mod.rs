@@ -28,6 +28,9 @@ pub struct GameplaySettings {
     pub pickup_recovery: f64,
     pub pickup_radius: f64,
     pub sun_arrival_gap: f64,
+    /// Experiencia por defecto: la partida se gana al recoger el tercer registro, sin ir al Sol (donde vive el
+    /// monstruo). `false` (clasico): tres registros y llegar al Sol.
+    pub win_on_logs: bool,
 }
 
 impl Default for GameplaySettings {
@@ -37,6 +40,7 @@ impl Default for GameplaySettings {
             pickup_recovery: 0.15,
             pickup_radius: 8.0,
             sun_arrival_gap: 30.0,
+            win_on_logs: false,
         }
     }
 }
@@ -57,6 +61,7 @@ impl GameplaySettings {
             pickup_recovery: valid(self.pickup_recovery, defaults.pickup_recovery).min(1.0),
             pickup_radius: valid(self.pickup_radius, defaults.pickup_radius),
             sun_arrival_gap: valid(self.sun_arrival_gap, defaults.sun_arrival_gap),
+            win_on_logs: self.win_on_logs,
         }
     }
 }
@@ -132,12 +137,13 @@ impl GameplayState {
             }
         }
         if self.collected_logs == 3
-            && system.bodies.first().is_some_and(|sun| {
-                sun.body_radius.is_finite()
-                    && sun.body_radius >= 0.0
-                    && (end - sun.position(end_time)).length()
-                        <= sun.body_radius + self.settings.sun_arrival_gap
-            })
+            && (self.settings.win_on_logs
+                || system.bodies.first().is_some_and(|sun| {
+                    sun.body_radius.is_finite()
+                        && sun.body_radius >= 0.0
+                        && (end - sun.position(end_time)).length()
+                            <= sun.body_radius + self.settings.sun_arrival_gap
+                }))
         {
             self.objective_complete = true;
         }
